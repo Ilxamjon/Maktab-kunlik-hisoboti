@@ -1,0 +1,15 @@
+Maktab Hisobot 0.4 — sinov holati
+
+Server: avtomatik testlar (maktab izolyatsiyasi, tuman izolyatsiyasi, 12:00 PDF, 7-A nomlari aralashmasligi).
+Tekshirildi: autentifikatsiya, sinflar bo'yicha ruxsat, administrator cheklovi,
+tuman xodimi o‘quvchi ro‘yxatini ko‘rmasligi, tumanlar o‘rtasida maktab ko‘rinmasligi,
+17 sabab, tarixiy manzil/jins nusxasi, o'quvchini tahrirlash va arxivlash,
+tahrir ziddiyati, tasdiqlash/qulflash, taqvim, oylik hisoblash,
+PDF ustunlari va turar joyi, Telegram navbati, qayta urinish/dublikat nazorati,
+parol almashtirish va sessiyani bekor qilish, WSGI API.
+
+PDF: uch varaq. Faqat sun'iy ma'lumot ishlatilgan.
+Telegram testi: mock; haqiqiy xabar yuborilmadi.
+Windows CMD: bu muhitda sinov qilinmagan.
+Android: assembleDebug. Versiya 0.4.
+Qurilmada to'liq foydalanuvchi jarayoni hali sinovdan o'tmagan.

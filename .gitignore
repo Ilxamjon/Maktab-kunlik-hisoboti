@@ -1,0 +1,14 @@
+*.db
+*.db-*
+.env
+.venv/
+__pycache__/
+.gradle/
+.idea/
+local.properties
+**/build/
+*.apk
+*.ap_
+.cursor/
+
+config.json

@@ -1,0 +1,18 @@
+[Unit]
+Description=Maktab Hisobot
+After=network.target
+
+[Service]
+Type=simple
+User=maktab
+Group=maktab
+WorkingDirectory=/opt/maktabhisobot/server
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+ExecStart=/opt/maktabhisobot/server/.venv/bin/python app.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

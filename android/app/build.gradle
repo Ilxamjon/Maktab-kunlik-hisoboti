@@ -1,0 +1,9 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'uz.maktab.hisobot'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    buildFeatures { buildConfig true }
+    defaultConfig { applicationId 'uz.maktab.hisobot'; minSdk 26; targetSdk 35; versionCode 4; versionName '0.4' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
