@@ -158,7 +158,15 @@ cd server
 py -m unittest -v
 ```
 
-PDF mazmunini tekshiradigan test uchun test muhitida `pypdf` ham o'rnatilsin (`py -m pip install pypdf`).
+Testlarni toza muhitda ishga tushirish uchun test dependency faylidan foydalaning:
+
+```powershell
+cd server
+py -m pip install -r requirements-dev.txt
+py -m unittest -v
+```
+
+GitHub Actions har bir push va Pull Requestda server testlarini hamda Android debug APK build’ini avtomatik tekshiradi.
 
 ## Zaxira
 
