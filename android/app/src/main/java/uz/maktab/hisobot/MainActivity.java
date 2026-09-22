@@ -15,6 +15,11 @@ import java.io.*;
 import java.time.LocalDate;
 import java.util.*;
 import java.util.concurrent.*;
+import android.os.CancellationSignal;
+import androidx.credentials.*;
+import androidx.credentials.exceptions.GetCredentialException;
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 
 /** Native Android pilot; backend URL must use HTTPS. Tokens only in memory. */
 public class MainActivity extends Activity {
@@ -62,12 +67,26 @@ public class MainActivity extends Activity {
         throw new IOException("HTTPS server kerak. Sinov APKda mahalliy IP uchun HTTP mumkin.");
     }
     void login(){
-        screen("Maktab Hisobot");label("Sinf rahbari, direktor o‘rinbosari va tuman xodimi");if(BuildConfig.DEBUG)label("SINOV VERSIYASI • Mahalliy tarmoq yoki HTTPS server");
-        EditText server=input(DEFAULT_SERVER,getPreferences(0).getString("server",DEFAULT_SERVER));
-        EditText schoolCode=input("Maktab yoki tuman kodi (XOJ-09 yoki XOJ)",getPreferences(0).getString("school",""));
-        EditText user=input("Login","");EditText password=input("Parol","");password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        button("Kirish",()->{base=server.getText().toString().trim().replaceAll("/+$","");loginName=user.getText().toString().trim();String enteredPassword=password.getText().toString();String code=schoolCode.getText().toString().trim();work(()->api("/login",json("school",code,"login",loginName,"password",enteredPassword)),r->{token=r.getString("token");role=r.getString("role");getPreferences(0).edit().putString("server",base).putString("school",r.optString("school",code)).apply();home();});});
+        base=DEFAULT_SERVER;screen("Maktab Hisobot");label("Kunlik davomatni tez va oson jo‘nating");
+        label("Google akkauntingiz bilan kiring. Alohida login va parol kerak emas.");button("Google bilan kirish",this::googleSignIn);
     }
+    void googleSignIn(){
+        String client=getString(R.string.google_web_client_id);if(client.startsWith("GOOGLE_")){message("Google Client ID hali sozlanmagan");return;}
+        GetGoogleIdOption option=new GetGoogleIdOption.Builder().setFilterByAuthorizedAccounts(false).setServerClientId(client).setAutoSelectEnabled(false).build();
+        GetCredentialRequest request=new GetCredentialRequest.Builder().addCredentialOption(option).build();
+        CredentialManager.create(this).getCredentialAsync(this,request,new CancellationSignal(),pool,new CredentialManagerCallback<GetCredentialResponse,GetCredentialException>(){
+            public void onResult(GetCredentialResponse response){try{Credential credential=response.getCredential();if(!GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType()))throw new Exception("Google token olinmadi");String idToken=GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();runOnUiThread(()->googleLogin(idToken));}catch(Exception e){runOnUiThread(()->message(e.getMessage()));}}
+            public void onError(GetCredentialException e){runOnUiThread(()->message("Google orqali kirish bekor qilindi"));}
+        });
+    }
+    void googleLogin(String idToken){work(()->api("/auth/google",json("id_token",idToken)),r->{if(r.optBoolean("onboarding")){onboarding(idToken);return;}if(r.optBoolean("pending")){pending();return;}token=r.getString("token");role=r.getString("role");loginName=r.optString("name");home();});}
+    void onboarding(String idToken){work(()->api("/catalog",null),catalog->{
+        screen("Ro‘yxatdan o‘tish");label("Tuman va maktabni tanlang. Ro‘yxatda bo‘lmasa nomini kiriting.");JSONArray districts=catalog.getJSONArray("districts");ArrayList<String> names=new ArrayList<>();for(int i=0;i<districts.length();i++)names.add(districts.getJSONObject(i).getString("name"));
+        Spinner districtPick=new Spinner(this);districtPick.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,names));page.addView(districtPick);EditText districtManual=input("Yangi tuman nomi (ixtiyoriy)","");EditText schoolName=input("Maktab raqami yoki to‘liq nomi","");
+        Spinner position=new Spinner(this);position.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"Ma’naviy-ma’rifiy ishlar bo‘yicha direktor o‘rinbosari","Sinf rahbari"}));page.addView(position);EditText className=input("Sinf rahbari bo‘lsangiz: masalan 5-A","");
+        button("Davom etish",()->{try{JSONObject d=districts.length()>0?districts.getJSONObject(districtPick.getSelectedItemPosition()):null;Object did=districtManual.getText().toString().trim().isEmpty()&&d!=null?d.getInt("id"):JSONObject.NULL;String sname=schoolName.getText().toString().trim();if(sname.isEmpty()){message("Maktab raqami yoki nomini kiriting");return;}work(()->api("/onboarding",json("id_token",idToken,"district_id",did,"district_name",districtManual.getText().toString().trim(),"school_name",sname,"class_name",className.getText().toString().trim())),r->{if(r.optBoolean("pending")){pending();return;}token=r.getString("token");role=r.getString("role");home();});}catch(Exception e){message(e.getMessage());}});
+    });}
+    void pending(){screen("Tasdiqlash kutilmoqda");label("Direktor o‘rinbosari akkauntingizni tasdiqlagach Google orqali qayta kiring.");button("Qayta kirish",this::login);}
     void home(){work(()->api("/classes",null),r->{
         if(role.equals("district")||"district".equals(r.optString("kind"))){districtHome(r);return;}
         JSONArray catalog=r.getJSONArray("reasons");reasons=new String[catalog.length()];for(int j=0;j<catalog.length();j++)reasons[j]=catalog.getString(j);school=r.getJSONObject("school");
