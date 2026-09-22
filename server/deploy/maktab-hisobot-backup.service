@@ -1,0 +1,12 @@
+[Unit]
+Description=Maktab Hisobot SQLite backup
+
+[Service]
+Type=oneshot
+User=maktab
+Group=maktab
+WorkingDirectory=/opt/maktabhisobot/server
+Environment=BACKUP_DIR=/opt/maktabhisobot/backup
+Environment=BACKUP_KEEP_DAYS=30
+ExecStart=/opt/maktabhisobot/server/.venv/bin/python /opt/maktabhisobot/server/backup.py
+NoNewPrivileges=true

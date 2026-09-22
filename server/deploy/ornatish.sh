@@ -15,6 +15,8 @@ python3 -m venv "$SRV/.venv"
 "$SRV/.venv/bin/pip" install -U pip
 "$SRV/.venv/bin/pip" install -r "$SRV/requirements.txt"
 install -m 644 "$SRV/deploy/maktab-hisobot.service" /etc/systemd/system/maktab-hisobot.service
+install -m 644 "$SRV/deploy/maktab-hisobot-backup.service" /etc/systemd/system/maktab-hisobot-backup.service
+install -m 644 "$SRV/deploy/maktab-hisobot-backup.timer" /etc/systemd/system/maktab-hisobot-backup.timer
 if [ ! -f /etc/nginx/sites-available/maktabhisobot ]; then
   install -m 644 "$SRV/deploy/nginx.conf.example" /etc/nginx/sites-available/maktabhisobot
   echo "Nginx da server_name ni o'z domeningizga o'zgartiring: /etc/nginx/sites-available/maktabhisobot"
@@ -34,3 +36,4 @@ echo "  3) sudo -u maktab $SRV/.venv/bin/python $SRV/setup_school.py"
 echo "  4) sudo nginx -t && sudo systemctl reload nginx"
 echo "  5) sudo certbot --nginx -d SIZNING_DOMEN"
 echo "  6) sudo systemctl enable --now maktab-hisobot"
+echo "  7) sudo systemctl enable --now maktab-hisobot-backup.timer"
