@@ -18,6 +18,7 @@ import java.util.concurrent.*;
 
 /** Native Android pilot; backend URL must use HTTPS. Tokens only in memory. */
 public class MainActivity extends Activity {
+    static final String DEFAULT_SERVER="https://maktab-hisobot-api.onrender.com";
     LinearLayout page; String base="", token="", role="", loginName="";
     final ExecutorService pool=Executors.newSingleThreadExecutor();
     String[] reasons={"Kelgan"};
@@ -62,7 +63,7 @@ public class MainActivity extends Activity {
     }
     void login(){
         screen("Maktab Hisobot");label("Sinf rahbari, direktor o‘rinbosari va tuman xodimi");if(BuildConfig.DEBUG)label("SINOV VERSIYASI • Mahalliy tarmoq yoki HTTPS server");
-        EditText server=input("https://hisobot.example.uz",getPreferences(0).getString("server",""));
+        EditText server=input(DEFAULT_SERVER,getPreferences(0).getString("server",DEFAULT_SERVER));
         EditText schoolCode=input("Maktab yoki tuman kodi (XOJ-09 yoki XOJ)",getPreferences(0).getString("school",""));
         EditText user=input("Login","");EditText password=input("Parol","");password.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
         button("Kirish",()->{base=server.getText().toString().trim().replaceAll("/+$","");loginName=user.getText().toString().trim();String enteredPassword=password.getText().toString();String code=schoolCode.getText().toString().trim();work(()->api("/login",json("school",code,"login",loginName,"password",enteredPassword)),r->{token=r.getString("token");role=r.getString("role");getPreferences(0).edit().putString("server",base).putString("school",r.optString("school",code)).apply();home();});});
