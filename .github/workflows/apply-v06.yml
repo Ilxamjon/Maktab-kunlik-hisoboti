@@ -1,0 +1,26 @@
+name: Apply v0.6 update once
+
+on:
+  push:
+    paths:
+      - ".github/workflows/apply-v06.yml"
+      - ".github/workflows/v06-update.patch"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply tested v0.6 patch
+        run: |
+          git config user.name "MaktabHisobot Updater"
+          git config user.email "actions@users.noreply.github.com"
+          git am .github/workflows/v06-update.patch
+          git rm .github/workflows/apply-v06.yml .github/workflows/v06-update.patch
+          git commit -m "Remove one-time v0.6 updater"
+          git push origin main

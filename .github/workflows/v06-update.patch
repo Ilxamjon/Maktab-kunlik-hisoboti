@@ -1,0 +1,626 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 22 Sep 2026 09:46:21 +0300
+Subject: [PATCH] Migrate production storage to Neon Postgres
+
+---
+ .github/workflows/noon.yml                  | 21 +++++++
+ .gitignore                                  |  3 +
+ README.md                                   | 53 ++++++++++++++--
+ TEKSHIRUV.txt                               |  4 +-
+ android/app/build.gradle                    |  2 +-
+ render.yaml                                 | 17 ++++++
+ server/.env.example                         |  6 ++
+ server/app.py                               | 68 ++++++++++++++++-----
+ server/backup.py                            | 26 ++++++++
+ server/database.py                          | 51 ++++++++++++++++
+ server/deploy/maktab-hisobot-backup.service | 12 ++++
+ server/deploy/maktab-hisobot-backup.timer   | 10 +++
+ server/deploy/ornatish.sh                   |  3 +
+ server/requirements.txt                     |  1 +
+ server/schema_postgres.sql                  | 32 ++++++++++
+ server/server.py                            | 26 ++++++--
+ server/test_server.py                       | 19 +++++-
+ 17 files changed, 324 insertions(+), 30 deletions(-)
+ create mode 100644 .github/workflows/noon.yml
+ create mode 100644 render.yaml
+ create mode 100644 server/backup.py
+ create mode 100644 server/database.py
+ create mode 100644 server/deploy/maktab-hisobot-backup.service
+ create mode 100644 server/deploy/maktab-hisobot-backup.timer
+ create mode 100644 server/schema_postgres.sql
+
+diff --git a/.github/workflows/noon.yml b/.github/workflows/noon.yml
+new file mode 100644
+index 0000000..eb0d6df
+--- /dev/null
++++ b/.github/workflows/noon.yml
+@@ -0,0 +1,21 @@
++name: Noon Telegram delivery
++
++on:
++  schedule:
++    - cron: "5 7 * * *" # 12:05 Asia/Tashkent (UTC+5)
++  workflow_dispatch:
++
++jobs:
++  deliver:
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    steps:
++      - name: Wake API and send school digests
++        env:
++          API_URL: ${{ secrets.API_URL }}
++          CRON_SECRET: ${{ secrets.CRON_SECRET }}
++        run: |
++          test -n "$API_URL" && test -n "$CRON_SECRET"
++          curl --fail --retry 3 --retry-all-errors --max-time 180 \
++            -H "X-Cron-Secret: $CRON_SECRET" \
++            "$API_URL/cron/noon"
+diff --git a/.gitignore b/.gitignore
+index 20131e1..5b1b6c1 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,7 +1,10 @@
+ *.db
+ *.db-*
++server/backups/
++backup/
+ .env
+ .venv/
++.audit-venv/
+ __pycache__/
+ .gradle/
+ .idea/
+diff --git a/README.md b/README.md
+index e2048a2..d5bc349 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,37 @@
+-# Maktab Hisobot — Android va Telegram, 0.4
++# Maktab Hisobot — Android, Neon va Telegram, 0.6
++
++## Neon + bepul API hosting
++
++Production rejimida ma‘lumotlar Neon PostgreSQL bazasida saqlanadi. Python API alohida bepul
++Render Web Service’da ishlaydi. Render vaqtincha uxlaganda ham GitHub Actions har kuni 12:05
++(O‘zbekiston vaqti) `/cron/noon` endpointini uyg‘otib, har bir maktab PDFini o‘z Telegramiga yuboradi.
++
++Kerakli maxfiy qiymatlar:
++
++- Render `DATABASE_URL`: Neon pooled connection string (`-pooler` host).
++- Render `CRON_SECRET`: kamida 32 belgili tasodifiy qiymat.
++- GitHub Actions `API_URL`: Render HTTPS manzili, oxirida `/` yo‘q.
++- GitHub Actions `CRON_SECRET`: Render’dagi bilan aynan bir xil.
++
++`render.yaml` Render Blueprint uchun, `.github/workflows/noon.yml` esa 12:05 yuborish uchun tayyor.
++`school.db` endi production ma‘lumotlar manbai emas; u faqat lokal sinovda ishlatiladi.
++
++## Tavsiya etilgan ommaviy tuzilma
++
++Bu loyiha uchun **bitta markaziy, doimo ishlaydigan server kerak**. Google Drive server emas;
++u Android ilovalarining login, davomat, PDF yaratish va Telegram yuborish so‘rovlarini bajara
++olmaydi. Drive faqat shifrlangan zaxira nusxalarini saqlash uchun ishlatilishi mumkin.
++
++Tizimdagi ajratish quyidagicha ishlaydi:
++
++- `XOJ` — Xo‘jayli tumani xodimi; tumandagi maktablar holatini ko‘radi.
++- `XOJ-18` — 18-maktab; uning direktor o‘rinbosari va sinf rahbarlari faqat shu maktab ma‘lumotlarini ko‘radi.
++- Har maktab alohida Telegram chatiga ulanadi. `XOJ-18` hisoboti boshqa maktabga yuborilmaydi.
++- O‘quvchi F.I.Sh. va manzillari tuman xodimiga ochilmaydi.
++
++Production ma‘lumotlari Neon PostgreSQL’da doimiy saqlanadi. Shu sabab Render Free web-servisi
++qayta ishga tushsa ham maktablar, o‘quvchilar va hisobotlar yo‘qolmaydi. SQLite faqat kompyuterdagi
++lokal sinov uchun qoldirilgan.
+ 
+ Ilova sinf rahbarlarining kunlik davomatini yig'adi. **Bitta markaziy server** barcha tumanlar va maktablar uchun. Masalan Xo‘jayli tumanida 42 ta maktab bo‘lsa, ularning har biri o‘z kodi bilan kiradi; hisobotlar aralashmaydi. Har kuni soat **12:00** (O‘zbekiston vaqti) server har bir maktabning jo‘natilgan hisobotlarini jamlab, o‘sha maktab direktor o‘rinbosari Telegramiga **3 varaqli PDF** yuboradi.
+ 
+@@ -70,7 +103,7 @@ sudo systemctl enable --now maktab-hisobot
+ curl https://SIZNING_DOMEN/health
+ ```
+ 
+-Javobda `"version": "0.4"` ko‘rinsa, server ishlayapti. Ilovada server manzili: `https://SIZNING_DOMEN` (oxirida `/` yo‘q, port yozilmaydi).
++Javobda `"version": "0.6"` va `"database": "postgres"` ko‘rinsa, Neon ulanishi ishlayapti.
+ 
+ Telegram: har maktab uchun serverda
+ 
+@@ -83,13 +116,21 @@ Soat 12:00 dastur ichida O‘zbekiston vaqti (UTC+5) bilan hisoblanadi. VPS qaye
+ 
+ ### Zaxira
+ 
+-Har kuni `school.db` nusxasini oling. Serverni o‘chirmasdan ham nusxa olish mumkin:
++Neon production bazasi uchun Neon history/restore ishlatiladi. Quyidagi SQLite timer faqat
++VPS yoki lokal SQLite rejimida kerak:
++
++O‘rnatish skripti har kuni soat 01:30 da xavfsiz SQLite backup yaratadigan systemd timer ham
++o‘rnatadi. Uni yoqish va tekshirish:
+ 
+ ```bash
+-sudo -u maktab cp /opt/maktabhisobot/server/school.db /opt/maktabhisobot/server/school.db.bak
++sudo systemctl enable --now maktab-hisobot-backup.timer
++sudo systemctl list-timers maktab-hisobot-backup.timer
++sudo systemctl start maktab-hisobot-backup.service
++ls -l /opt/maktabhisobot/backup
+ ```
+ 
+-Bu fayl va `config.json` ni GitHubga qo‘ymang.
++Oxirgi 30 kunlik nusxalar saqlanadi. Backup papkasini serverdan tashqaridagi yopiq joyga ham
++nusxalash kerak. `school.db`, backup va `config.json` ni GitHubga qo‘ymang.
+ 
+ Namunalar: `server/deploy/nginx.conf.example`, `server/deploy/maktab-hisobot.service`.
+ 
+@@ -144,7 +185,7 @@ Oylik foiz = kelgan o'quvchi-kunlar / topshirilgan jami o'quvchi-kunlar × 100.
+ ## Server va manba kodi
+ 
+ - `android/` — native Java loyiha.
+-- `server/` — SQLite (WAL), PDF va Telegram navbati, Waitress WSGI. Ertalabki bir vaqtdagi yuborishlar uchun WAL va `busy_timeout` yoqilgan.
++- `server/` — productionda Neon PostgreSQL, lokal sinovda SQLite; PDF, Telegram navbati va Waitress WSGI.
+ - APK uchun Android 8.0 (API 26) yoki yangiroq telefon kerak.
+ - Build: JDK 17, Gradle 8.9, Android SDK 35, Build Tools 35.0.0, AGP 8.7.3.
+ 
+diff --git a/TEKSHIRUV.txt b/TEKSHIRUV.txt
+index 0831455..6257d30 100644
+--- a/TEKSHIRUV.txt
++++ b/TEKSHIRUV.txt
+@@ -1,4 +1,4 @@
+-Maktab Hisobot 0.4 — sinov holati
++Maktab Hisobot 0.6 — Neon production tayyorlash
+ 
+ Server: avtomatik testlar (maktab izolyatsiyasi, tuman izolyatsiyasi, 12:00 PDF, 7-A nomlari aralashmasligi).
+ Tekshirildi: autentifikatsiya, sinflar bo'yicha ruxsat, administrator cheklovi,
+@@ -11,5 +11,5 @@ parol almashtirish va sessiyani bekor qilish, WSGI API.
+ PDF: uch varaq. Faqat sun'iy ma'lumot ishlatilgan.
+ Telegram testi: mock; haqiqiy xabar yuborilmadi.
+ Windows CMD: bu muhitda sinov qilinmagan.
+-Android: assembleDebug. Versiya 0.4.
++Android: assembleDebug. Versiya 0.6.
+ Qurilmada to'liq foydalanuvchi jarayoni hali sinovdan o'tmagan.
+diff --git a/android/app/build.gradle b/android/app/build.gradle
+index aa0a9fe..f40597d 100644
+--- a/android/app/build.gradle
++++ b/android/app/build.gradle
+@@ -4,6 +4,6 @@ android {
+     compileSdk 35
+     buildToolsVersion '35.0.0'
+     buildFeatures { buildConfig true }
+-    defaultConfig { applicationId 'uz.maktab.hisobot'; minSdk 26; targetSdk 35; versionCode 4; versionName '0.4' }
++    defaultConfig { applicationId 'uz.maktab.hisobot'; minSdk 26; targetSdk 35; versionCode 6; versionName '0.6' }
+     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+ }
+diff --git a/render.yaml b/render.yaml
+new file mode 100644
+index 0000000..d1efeaf
+--- /dev/null
++++ b/render.yaml
+@@ -0,0 +1,17 @@
++services:
++  - type: web
++    name: maktab-hisobot-api
++    runtime: python
++    plan: free
++    rootDir: server
++    buildCommand: pip install -r requirements.txt
++    startCommand: waitress-serve --listen=0.0.0.0:$PORT app:application
++    healthCheckPath: /health
++    autoDeployTrigger: commit
++    envVars:
++      - key: PYTHON_VERSION
++        value: 3.12.7
++      - key: DATABASE_URL
++        sync: false
++      - key: CRON_SECRET
++        generateValue: true
+diff --git a/server/.env.example b/server/.env.example
+index fbf5966..30ded28 100644
+--- a/server/.env.example
++++ b/server/.env.example
+@@ -2,3 +2,9 @@
+ SCHOOL_NAME=Maktab nomi
+ TELEGRAM_BOT_TOKEN=
+ TELEGRAM_CHAT_ID=
++# Production: Neon pooled connection string (-pooler host).
++DATABASE_URL=
++# Schema migration/pg_dump uchun direct connection string.
++DATABASE_URL_UNPOOLED=
++# Cron endpoint uchun kamida 32 belgili tasodifiy kalit.
++CRON_SECRET=
+diff --git a/server/app.py b/server/app.py
+index e2cb101..4216d98 100644
+--- a/server/app.py
++++ b/server/app.py
+@@ -1,40 +1,80 @@
+ """WSGI entry point for Waitress. Authentication is a bearer token, not a cookie."""
+-import json,sqlite3,time,threading
++import ipaddress,json,logging,os,secrets,sqlite3,time,threading
++import database
+ from http import HTTPStatus
+ import server
++logging.basicConfig(
++    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper(), logging.INFO),
++    format='%(asctime)s %(levelname)s %(name)s %(message)s')
++LOG=logging.getLogger('maktab-hisobot')
+ _LIMITS={};_LOCK=threading.Lock()
++
++def _client_ip(environ):
++    """Trust nginx's real IP only when Waitress is reached through loopback."""
++    peer=environ.get('REMOTE_ADDR','unknown')
++    forwarded=environ.get('HTTP_X_REAL_IP','') if peer in ('127.0.0.1','::1') else ''
++    candidate=forwarded or peer
++    try:return str(ipaddress.ip_address(candidate))
++    except ValueError:return 'unknown'
++
++def _login_key(environ,data):
++    identity=(str(data.get('school',''))+'|'+str(data.get('login',''))).strip().lower()
++    return _client_ip(environ)+'|'+identity[:180]
++
++def _check_login_limit(key):
++    now=time.monotonic()
++    with _LOCK:
++        for item in list(_LIMITS):
++            if _LIMITS[item][1] <= now:del _LIMITS[item]
++        count,end=_LIMITS.get(key,(0,now+300))
++        if count>=10:raise server.ApiError('Ko‘p xato urinish. Besh daqiqadan keyin qayta kiring.',429)
++
++def _record_login_failure(key):
++    now=time.monotonic()
++    with _LOCK:
++        count,end=_LIMITS.get(key,(0,now+300))
++        if end<=now:count,end=0,now+300
++        _LIMITS[key]=(count+1,end)
++
++def _clear_login_failures(key):
++    with _LOCK:_LIMITS.pop(key,None)
++
+ def application(environ,start_response):
+     code=200;ctype='application/json; charset=utf-8'
++    login_key=None
+     try:
+         method=environ.get('REQUEST_METHOD','GET');path=environ.get('PATH_INFO','/')
+         if method not in ('GET','POST'):raise server.ApiError('GET yoki POST kerak',405)
+-        if path=='/login':
+-            peer=environ.get('REMOTE_ADDR','unknown');now=time.monotonic()
+-            with _LOCK:
+-                for key in list(_LIMITS):
+-                    if _LIMITS[key][1]<now:del _LIMITS[key]
+-                count,end=_LIMITS.get(peer,(0,now+60))
+-                if count>=20:raise server.ApiError('Ko‘p urinish. Bir daqiqadan keyin qayta kiring.',429)
+-                _LIMITS[peer]=(count+1,end)
+         length=int(environ.get('CONTENT_LENGTH') or 0)
+         if length<0 or length>1_000_000:raise server.ApiError('So‘rov hajmi katta',413)
+         data=json.loads(environ['wsgi.input'].read(length)) if length else {}
+         if not isinstance(data,dict):raise server.ApiError('JSON obyekt kerak')
++        if path=='/login':login_key=_login_key(environ,data);_check_login_limit(login_key)
+         query=environ.get('QUERY_STRING','');token=environ.get('HTTP_AUTHORIZATION','').removeprefix('Bearer ')
+-        if path=='/health':result={'status':'ok','version':'0.4'}
++        if path=='/health':result={'status':'ok','version':'0.6','database':'postgres' if database.is_postgres() else 'sqlite'}
++        elif path=='/cron/noon':
++            expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
++            if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)
++            queued=server.maybe_noon_digests();processed=0
++            while processed<100 and server.process_one():processed+=1
++            result={'ok':True,'queued':queued,'processed':processed}
+         else:result=server.dispatch(method,path+('?' +query if query else ''),data,token)
++        if login_key:_clear_login_failures(login_key)
+         if isinstance(result,bytes):raw=result;ctype='application/pdf'
+         else:raw=json.dumps(result,ensure_ascii=False).encode()
+-    except server.ApiError as e:code=e.status;raw=json.dumps({'error':e.message},ensure_ascii=False).encode()
+-    except sqlite3.IntegrityError:code=409;raw=json.dumps({'error':'Login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode()
++    except server.ApiError as e:
++        if login_key and e.status==401:_record_login_failure(login_key)
++        code=e.status;raw=json.dumps({'error':e.message},ensure_ascii=False).encode()
++    except database.INTEGRITY_ERRORS:code=409;raw=json.dumps({'error':'Login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode()
+     except (ValueError,TypeError):code=400;raw=b'{"error":"Bad request"}'
+-    except Exception:code=500;raw=b'{"error":"Server error"}'
++    except Exception:
++        LOG.exception('Unhandled request error: %s %s',environ.get('REQUEST_METHOD'),environ.get('PATH_INFO'))
++        code=500;raw=b'{"error":"Server error"}'
+     headers=[('Content-Type',ctype),('Content-Length',str(len(raw))),('Cache-Control','no-store'),('X-Content-Type-Options','nosniff')]
+     if ctype=='application/pdf':headers.append(('Content-Disposition','attachment; filename="Hisobot.pdf"'))
+     start_response(str(code)+' '+HTTPStatus(code).phrase,headers);return [raw]
+ 
+ if __name__=='__main__':
+-    import os
+     from waitress import serve
+     config=server.ROOT/'config.json'
+     if config.exists():
+diff --git a/server/backup.py b/server/backup.py
+new file mode 100644
+index 0000000..503bbac
+--- /dev/null
++++ b/server/backup.py
+@@ -0,0 +1,26 @@
++"""Create a consistent SQLite backup without stopping the server."""
++import os,sqlite3
++from datetime import datetime,timezone,timedelta
++from pathlib import Path
++
++ROOT=Path(__file__).parent
++SOURCE=Path(os.getenv('DATABASE_PATH',ROOT/'school.db'))
++DEST=Path(os.getenv('BACKUP_DIR',ROOT/'backups'))
++KEEP_DAYS=max(7,int(os.getenv('BACKUP_KEEP_DAYS','30')))
++
++def main():
++    if os.getenv('DATABASE_URL','').startswith(('postgres://','postgresql://')):
++        print('Neon Postgres zaxirasi Neon history/restore orqali boshqariladi. SQLite backup o‘tkazib yuborildi.')
++        return
++    if not SOURCE.exists():raise SystemExit('Baza topilmadi: '+str(SOURCE))
++    DEST.mkdir(parents=True,exist_ok=True)
++    now=datetime.now(timezone(timedelta(hours=5)))
++    target=DEST/('school-'+now.strftime('%Y%m%d-%H%M%S')+'.db')
++    with sqlite3.connect(SOURCE) as source, sqlite3.connect(target) as destination:
++        source.backup(destination)
++    cutoff=now.timestamp()-KEEP_DAYS*86400
++    for old in DEST.glob('school-*.db'):
++        if old.stat().st_mtime<cutoff:old.unlink()
++    print(target)
++
++if __name__=='__main__':main()
+diff --git a/server/database.py b/server/database.py
+new file mode 100644
+index 0000000..0a43e40
+--- /dev/null
++++ b/server/database.py
+@@ -0,0 +1,51 @@
++"""Small database compatibility layer: SQLite locally, Neon Postgres in production."""
++import os,re,sqlite3
++
++DATABASE_URL=os.getenv('DATABASE_URL','')
++
++class Row(dict):
++    def __init__(self,names,values):
++        super().__init__(zip(names,values));self._values=tuple(values)
++    def __getitem__(self,key):
++        return self._values[key] if isinstance(key,int) else super().__getitem__(key)
++
++class Result:
++    def __init__(self,cursor):self.cursor=cursor
++    def _row(self,value):
++        if value is None:return None
++        names=[d.name if hasattr(d,'name') else d[0] for d in self.cursor.description]
++        return Row(names,value)
++    def fetchone(self):return self._row(self.cursor.fetchone())
++    def fetchall(self):return [self._row(v) for v in self.cursor.fetchall()]
++    def __iter__(self):
++        while True:
++            row=self.fetchone()
++            if row is None:return
++            yield row
++
++class PgConnection:
++    def __init__(self,connection):self.connection=connection
++    def execute(self,sql,args=()):
++        cleaned=sql.strip().rstrip(';')
++        if cleaned.upper()=='BEGIN IMMEDIATE':return Result(self.connection.execute('SELECT 1 WHERE FALSE'))
++        cleaned=cleaned.replace('?','%s')
++        match=re.match(r'(?is)^INSERT\s+OR\s+IGNORE\s+INTO\s+(.+)$',cleaned)
++        if match:cleaned='INSERT INTO '+match.group(1)+' ON CONFLICT DO NOTHING'
++        return Result(self.connection.execute(cleaned,args))
++    def close(self):self.connection.close()
++    def __enter__(self):return self
++    def __exit__(self,kind,value,tb):
++        if kind is None:self.connection.commit()
++        else:self.connection.rollback()
++
++def is_postgres():return bool(os.getenv('DATABASE_URL','').startswith(('postgres://','postgresql://')))
++
++def postgres_connect():
++    import psycopg
++    return PgConnection(psycopg.connect(os.environ['DATABASE_URL'],connect_timeout=15))
++
++INTEGRITY_ERRORS=(sqlite3.IntegrityError,)
++try:
++    import psycopg
++    INTEGRITY_ERRORS+=(psycopg.IntegrityError,)
++except ImportError:pass
+diff --git a/server/deploy/maktab-hisobot-backup.service b/server/deploy/maktab-hisobot-backup.service
+new file mode 100644
+index 0000000..d1474ee
+--- /dev/null
++++ b/server/deploy/maktab-hisobot-backup.service
+@@ -0,0 +1,12 @@
++[Unit]
++Description=Maktab Hisobot SQLite backup
++
++[Service]
++Type=oneshot
++User=maktab
++Group=maktab
++WorkingDirectory=/opt/maktabhisobot/server
++Environment=BACKUP_DIR=/opt/maktabhisobot/backup
++Environment=BACKUP_KEEP_DAYS=30
++ExecStart=/opt/maktabhisobot/server/.venv/bin/python /opt/maktabhisobot/server/backup.py
++NoNewPrivileges=true
+diff --git a/server/deploy/maktab-hisobot-backup.timer b/server/deploy/maktab-hisobot-backup.timer
+new file mode 100644
+index 0000000..5a013b9
+--- /dev/null
++++ b/server/deploy/maktab-hisobot-backup.timer
+@@ -0,0 +1,10 @@
++[Unit]
++Description=Daily Maktab Hisobot backup
++
++[Timer]
++OnCalendar=*-*-* 01:30:00 Asia/Tashkent
++Persistent=true
++RandomizedDelaySec=300
++
++[Install]
++WantedBy=timers.target
+diff --git a/server/deploy/ornatish.sh b/server/deploy/ornatish.sh
+index 0ea7265..d623e05 100644
+--- a/server/deploy/ornatish.sh
++++ b/server/deploy/ornatish.sh
+@@ -15,6 +15,8 @@ python3 -m venv "$SRV/.venv"
+ "$SRV/.venv/bin/pip" install -U pip
+ "$SRV/.venv/bin/pip" install -r "$SRV/requirements.txt"
+ install -m 644 "$SRV/deploy/maktab-hisobot.service" /etc/systemd/system/maktab-hisobot.service
++install -m 644 "$SRV/deploy/maktab-hisobot-backup.service" /etc/systemd/system/maktab-hisobot-backup.service
++install -m 644 "$SRV/deploy/maktab-hisobot-backup.timer" /etc/systemd/system/maktab-hisobot-backup.timer
+ if [ ! -f /etc/nginx/sites-available/maktabhisobot ]; then
+   install -m 644 "$SRV/deploy/nginx.conf.example" /etc/nginx/sites-available/maktabhisobot
+   echo "Nginx da server_name ni o'z domeningizga o'zgartiring: /etc/nginx/sites-available/maktabhisobot"
+@@ -34,3 +36,4 @@ echo "  3) sudo -u maktab $SRV/.venv/bin/python $SRV/setup_school.py"
+ echo "  4) sudo nginx -t && sudo systemctl reload nginx"
+ echo "  5) sudo certbot --nginx -d SIZNING_DOMEN"
+ echo "  6) sudo systemctl enable --now maktab-hisobot"
++echo "  7) sudo systemctl enable --now maktab-hisobot-backup.timer"
+diff --git a/server/requirements.txt b/server/requirements.txt
+index 79ac837..ea46693 100644
+--- a/server/requirements.txt
++++ b/server/requirements.txt
+@@ -1,2 +1,3 @@
+ reportlab==4.4.9
+ waitress==3.0.2
++psycopg[binary]==3.2.10
+diff --git a/server/schema_postgres.sql b/server/schema_postgres.sql
+new file mode 100644
+index 0000000..057f409
+--- /dev/null
++++ b/server/schema_postgres.sql
+@@ -0,0 +1,32 @@
++CREATE TABLE IF NOT EXISTS districts(
++ id BIGSERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
++CREATE TABLE IF NOT EXISTS schools(
++ id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id),
++ code TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '',
++ executor TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '');
++CREATE TABLE IF NOT EXISTS users(
++ id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id), school_id BIGINT REFERENCES schools(id),
++ login TEXT NOT NULL, password TEXT, role TEXT NOT NULL CHECK(role IN ('district','admin','teacher')), name TEXT NOT NULL DEFAULT '');
++CREATE UNIQUE INDEX IF NOT EXISTS users_school_login ON users(school_id,login) WHERE school_id IS NOT NULL;
++CREATE UNIQUE INDEX IF NOT EXISTS users_district_login ON users(district_id,login) WHERE school_id IS NULL;
++CREATE TABLE IF NOT EXISTS classes(
++ id BIGSERIAL PRIMARY KEY, school_id BIGINT NOT NULL REFERENCES schools(id), name TEXT NOT NULL,
++ teacher BIGINT REFERENCES users(id), UNIQUE(school_id,name));
++CREATE TABLE IF NOT EXISTS students(
++ id BIGSERIAL PRIMARY KEY, class_id BIGINT REFERENCES classes(id), name TEXT, gender TEXT, address TEXT, active INTEGER NOT NULL DEFAULT 1);
++CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id BIGINT REFERENCES users(id),expires DOUBLE PRECISION);
++CREATE TABLE IF NOT EXISTS reports(
++ school_id BIGINT NOT NULL REFERENCES schools(id), day TEXT NOT NULL, class_id BIGINT NOT NULL REFERENCES classes(id),
++ revision INTEGER,payload TEXT,updated DOUBLE PRECISION,locked INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,class_id));
++CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,day TEXT,class_id BIGINT,user_id BIGINT,payload TEXT,created DOUBLE PRECISION);
++CREATE TABLE IF NOT EXISTS outbox(
++ id BIGSERIAL PRIMARY KEY,school_id BIGINT NOT NULL REFERENCES schools(id),day TEXT,kind TEXT NOT NULL DEFAULT 'manual',
++ fingerprint TEXT NOT NULL,pdf BYTEA,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try DOUBLE PRECISION DEFAULT 0,
++ claimed DOUBLE PRECISION DEFAULT 0,UNIQUE(school_id,fingerprint));
++CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
++CREATE TABLE IF NOT EXISTS calendar(school_id BIGINT NOT NULL REFERENCES schools(id),day TEXT NOT NULL,teaching INTEGER NOT NULL,PRIMARY KEY(school_id,day));
++CREATE TABLE IF NOT EXISTS changes(id BIGSERIAL PRIMARY KEY,user_id BIGINT,action TEXT,created DOUBLE PRECISION);
++CREATE TABLE IF NOT EXISTS digests(school_id BIGINT NOT NULL,day TEXT NOT NULL,kind TEXT NOT NULL,created DOUBLE PRECISION NOT NULL,PRIMARY KEY(school_id,day,kind));
++CREATE INDEX IF NOT EXISTS reports_school_day ON reports(school_id,day);
++CREATE INDEX IF NOT EXISTS classes_school ON classes(school_id);
++CREATE INDEX IF NOT EXISTS schools_district ON schools(district_id);
+diff --git a/server/server.py b/server/server.py
+index cff805b..36d4c65 100644
+--- a/server/server.py
++++ b/server/server.py
+@@ -1,6 +1,7 @@
+ """School-scoped attendance API. Serve behind HTTPS for device access."""
+ from contextlib import contextmanager
+-import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re
++import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re, logging
++import database
+ from datetime import date, datetime, timedelta, timezone
+ from catalog import REASONS, COLUMN_ORDER
+ from pathlib import Path
+@@ -8,6 +9,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+ from urllib.parse import urlsplit, parse_qs
+ from urllib.request import Request, urlopen
+ ROOT=Path(__file__).parent
++LOG=logging.getLogger('maktab-hisobot.worker')
+ DB=os.getenv('DATABASE_PATH', str(ROOT/'school.db'))
+ TZ=timezone(timedelta(hours=5))
+ def now_uz():
+@@ -19,8 +21,10 @@ class ApiError(Exception):
+ 
+ @contextmanager
+ def connect():
+-    c=sqlite3.connect(DB, timeout=30); c.row_factory=sqlite3.Row
+-    c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA busy_timeout=8000')
++    if database.is_postgres():c=database.postgres_connect()
++    else:
++        c=sqlite3.connect(DB, timeout=30); c.row_factory=sqlite3.Row
++        c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA busy_timeout=8000')
+     try:
+         with c:yield c
+     finally:c.close()
+@@ -200,6 +204,17 @@ def migrate_v4(c):
+     c.execute('PRAGMA user_version=4')
+ 
+ def init():
++    if database.is_postgres():
++        schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
++        with connect() as c:
++            for statement in schema.split(';'):
++                if statement.strip():c.execute(statement)
++            if not c.execute('SELECT 1 FROM districts LIMIT 1').fetchone():
++                c.execute('INSERT INTO districts(code,name) VALUES(?,?)',((os.getenv('DISTRICT_CODE') or 'TUMAN').upper(),os.getenv('DISTRICT_NAME') or 'Tuman'))
++            if not c.execute('SELECT 1 FROM schools LIMIT 1').fetchone():
++                did=c.execute('SELECT id FROM districts ORDER BY id LIMIT 1').fetchone()[0]
++                c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?)',(did,(os.getenv('SCHOOL_CODE') or 'MAKTAB').upper(),os.getenv('SCHOOL_NAME') or 'Maktab'))
++        return
+     with connect() as c:
+         c.executescript('''
+         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, login TEXT UNIQUE, password TEXT, role TEXT CHECK(role IN ('admin','teacher')));
+@@ -560,6 +575,7 @@ def process_one():
+     filename='Hisobot-'+school['code']+'-'+row['day']+'.pdf'
+     try:send_document(row['pdf'],row['day'],token,chat,caption,filename)
+     except Exception:
++        LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
+         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
+     else:
+         with connect() as c:c.execute("UPDATE outbox SET state='sent',attempts=attempts+1 WHERE id=?",(row['id'],))
+@@ -568,7 +584,7 @@ def process_one():
+ def worker():
+     while True:
+         try:maybe_noon_digests();process_one()
+-        except Exception:pass
++        except Exception:LOG.exception('Background worker iteration failed')
+         time.sleep(5)
+ 
+ class Handler(BaseHTTPRequestHandler):
+@@ -585,7 +601,7 @@ class Handler(BaseHTTPRequestHandler):
+             raw=result if isinstance(result,bytes) else json.dumps(result,ensure_ascii=False).encode();status=200
+             content='application/pdf' if isinstance(result,bytes) else 'application/json; charset=utf-8'
+         except ApiError as e:raw=json.dumps({'error':e.message},ensure_ascii=False).encode();status=e.status;content='application/json'
+-        except sqlite3.IntegrityError:raw=json.dumps({'error':'Bu login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode();status=409;content='application/json'
++        except database.INTEGRITY_ERRORS:raw=json.dumps({'error':'Bu login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode();status=409;content='application/json'
+         except (ValueError,TypeError):raw=b'{"error":"Bad request"}';status=400;content='application/json'
+         except Exception:raw=b'{"error":"Server error"}';status=500;content='application/json'
+         self.send_response(status);self.send_header('Content-Type',content);self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
+diff --git a/server/test_server.py b/server/test_server.py
+index af5e8a0..3fef05a 100644
+--- a/server/test_server.py
++++ b/server/test_server.py
+@@ -154,14 +154,29 @@ class Tests(unittest.TestCase):
+         with self.assertRaises(s.ApiError):s.dispatch('GET','/students?class_id='+str(other_id),{},self.tokens[2])
+     def test_wsgi_json_pdf_and_auth(self):
+         import app,io
+-        def call(path,token='',data=None):
++        def call(path,token='',data=None,extra=None):
+             raw=json.dumps(data).encode() if data is not None else b''
+             parts=path.split('?',1);headers=[]
+-            result=app.application({'REQUEST_METHOD':'POST' if data is not None else 'GET','PATH_INFO':parts[0],'QUERY_STRING':parts[1] if len(parts)>1 else '', 'CONTENT_LENGTH':str(len(raw)),'wsgi.input':io.BytesIO(raw),'HTTP_AUTHORIZATION':'Bearer '+token,'REMOTE_ADDR':'test'},lambda status,h:headers.extend([status,h]))
++            env={'REQUEST_METHOD':'POST' if data is not None else 'GET','PATH_INFO':parts[0],'QUERY_STRING':parts[1] if len(parts)>1 else '', 'CONTENT_LENGTH':str(len(raw)),'wsgi.input':io.BytesIO(raw),'HTTP_AUTHORIZATION':'Bearer '+token,'REMOTE_ADDR':'test'}
++            env.update(extra or {})
++            result=app.application(env,lambda status,h:headers.extend([status,h]))
+             return headers,b''.join(result)
+         self.assertTrue(call('/classes')[0][0].startswith('401'))
+         self.submit();headers,body=call('/pdf?day=2026-09-16',self.tokens[1]);self.assertTrue(headers[0].startswith('200'));self.assertTrue(body.startswith(b'%PDF'))
+         self.assertTrue(call('/users',self.tokens[2],{'login':'evil','password':'long-password','name':'X'})[0][0].startswith('403'))
++        with patch.dict(os.environ,{'CRON_SECRET':'test-secret'}):
++            self.assertTrue(call('/cron/noon')[0][0].startswith('403'))
++            self.assertTrue(call('/cron/noon',extra={'HTTP_X_CRON_SECRET':'test-secret'})[0][0].startswith('200'))
++    def test_proxy_ip_and_failed_login_rate_limit(self):
++        import app
++        app._LIMITS.clear()
++        env={'REMOTE_ADDR':'127.0.0.1','HTTP_X_REAL_IP':'203.0.113.8'}
++        self.assertEqual(app._client_ip(env),'203.0.113.8')
++        key=app._login_key(env,{'school':'MAKTAB','login':'user2'})
++        for _ in range(10):app._record_login_failure(key)
++        with self.assertRaises(s.ApiError) as error:app._check_login_limit(key)
++        self.assertEqual(error.exception.status,429)
++        app._clear_login_failures(key);app._check_login_limit(key)
+     def test_districts_do_not_mix(self):
+         pw=s.password_hash('secret-pass')
+         with s.connect() as c:
