@@ -1,6 +1,7 @@
 """School-scoped attendance API. Serve behind HTTPS for device access."""
 from contextlib import contextmanager
-import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re
+import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re, logging
+import database
 from datetime import date, datetime, timedelta, timezone
 from catalog import REASONS, COLUMN_ORDER
 from pathlib import Path
@@ -8,6 +9,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs
 from urllib.request import Request, urlopen
 ROOT=Path(__file__).parent
+LOG=logging.getLogger('maktab-hisobot.worker')
 DB=os.getenv('DATABASE_PATH', str(ROOT/'school.db'))
 TZ=timezone(timedelta(hours=5))
 def now_uz():
@@ -19,8 +21,10 @@ class ApiError(Exception):
 
 @contextmanager
 def connect():
-    c=sqlite3.connect(DB, timeout=30); c.row_factory=sqlite3.Row
-    c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA busy_timeout=8000')
+    if database.is_postgres():c=database.postgres_connect()
+    else:
+        c=sqlite3.connect(DB, timeout=30); c.row_factory=sqlite3.Row
+        c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA busy_timeout=8000')
     try:
         with c:yield c
     finally:c.close()
@@ -200,6 +204,17 @@ def migrate_v4(c):
     c.execute('PRAGMA user_version=4')
 
 def init():
+    if database.is_postgres():
+        schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
+        with connect() as c:
+            for statement in schema.split(';'):
+                if statement.strip():c.execute(statement)
+            if not c.execute('SELECT 1 FROM districts LIMIT 1').fetchone():
+                c.execute('INSERT INTO districts(code,name) VALUES(?,?)',((os.getenv('DISTRICT_CODE') or 'TUMAN').upper(),os.getenv('DISTRICT_NAME') or 'Tuman'))
+            if not c.execute('SELECT 1 FROM schools LIMIT 1').fetchone():
+                did=c.execute('SELECT id FROM districts ORDER BY id LIMIT 1').fetchone()[0]
+                c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?)',(did,(os.getenv('SCHOOL_CODE') or 'MAKTAB').upper(),os.getenv('SCHOOL_NAME') or 'Maktab'))
+        return
     with connect() as c:
         c.executescript('''
         CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, login TEXT UNIQUE, password TEXT, role TEXT CHECK(role IN ('admin','teacher')));
@@ -560,6 +575,7 @@ def process_one():
     filename='Hisobot-'+school['code']+'-'+row['day']+'.pdf'
     try:send_document(row['pdf'],row['day'],token,chat,caption,filename)
     except Exception:
+        LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
     else:
         with connect() as c:c.execute("UPDATE outbox SET state='sent',attempts=attempts+1 WHERE id=?",(row['id'],))
@@ -568,7 +584,7 @@ def process_one():
 def worker():
     while True:
         try:maybe_noon_digests();process_one()
-        except Exception:pass
+        except Exception:LOG.exception('Background worker iteration failed')
         time.sleep(5)
 
 class Handler(BaseHTTPRequestHandler):
@@ -585,7 +601,7 @@ class Handler(BaseHTTPRequestHandler):
             raw=result if isinstance(result,bytes) else json.dumps(result,ensure_ascii=False).encode();status=200
             content='application/pdf' if isinstance(result,bytes) else 'application/json; charset=utf-8'
         except ApiError as e:raw=json.dumps({'error':e.message},ensure_ascii=False).encode();status=e.status;content='application/json'
-        except sqlite3.IntegrityError:raw=json.dumps({'error':'Bu login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode();status=409;content='application/json'
+        except database.INTEGRITY_ERRORS:raw=json.dumps({'error':'Bu login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode();status=409;content='application/json'
         except (ValueError,TypeError):raw=b'{"error":"Bad request"}';status=400;content='application/json'
         except Exception:raw=b'{"error":"Server error"}';status=500;content='application/json'
         self.send_response(status);self.send_header('Content-Type',content);self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)

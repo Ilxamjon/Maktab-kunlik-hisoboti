@@ -1,0 +1,32 @@
+CREATE TABLE IF NOT EXISTS districts(
+ id BIGSERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS schools(
+ id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id),
+ code TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '',
+ executor TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS users(
+ id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id), school_id BIGINT REFERENCES schools(id),
+ login TEXT NOT NULL, password TEXT, role TEXT NOT NULL CHECK(role IN ('district','admin','teacher')), name TEXT NOT NULL DEFAULT '');
+CREATE UNIQUE INDEX IF NOT EXISTS users_school_login ON users(school_id,login) WHERE school_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_district_login ON users(district_id,login) WHERE school_id IS NULL;
+CREATE TABLE IF NOT EXISTS classes(
+ id BIGSERIAL PRIMARY KEY, school_id BIGINT NOT NULL REFERENCES schools(id), name TEXT NOT NULL,
+ teacher BIGINT REFERENCES users(id), UNIQUE(school_id,name));
+CREATE TABLE IF NOT EXISTS students(
+ id BIGSERIAL PRIMARY KEY, class_id BIGINT REFERENCES classes(id), name TEXT, gender TEXT, address TEXT, active INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id BIGINT REFERENCES users(id),expires DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS reports(
+ school_id BIGINT NOT NULL REFERENCES schools(id), day TEXT NOT NULL, class_id BIGINT NOT NULL REFERENCES classes(id),
+ revision INTEGER,payload TEXT,updated DOUBLE PRECISION,locked INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,class_id));
+CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY,day TEXT,class_id BIGINT,user_id BIGINT,payload TEXT,created DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS outbox(
+ id BIGSERIAL PRIMARY KEY,school_id BIGINT NOT NULL REFERENCES schools(id),day TEXT,kind TEXT NOT NULL DEFAULT 'manual',
+ fingerprint TEXT NOT NULL,pdf BYTEA,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try DOUBLE PRECISION DEFAULT 0,
+ claimed DOUBLE PRECISION DEFAULT 0,UNIQUE(school_id,fingerprint));
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS calendar(school_id BIGINT NOT NULL REFERENCES schools(id),day TEXT NOT NULL,teaching INTEGER NOT NULL,PRIMARY KEY(school_id,day));
+CREATE TABLE IF NOT EXISTS changes(id BIGSERIAL PRIMARY KEY,user_id BIGINT,action TEXT,created DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS digests(school_id BIGINT NOT NULL,day TEXT NOT NULL,kind TEXT NOT NULL,created DOUBLE PRECISION NOT NULL,PRIMARY KEY(school_id,day,kind));
+CREATE INDEX IF NOT EXISTS reports_school_day ON reports(school_id,day);
+CREATE INDEX IF NOT EXISTS classes_school ON classes(school_id);
+CREATE INDEX IF NOT EXISTS schools_district ON schools(district_id);

@@ -154,14 +154,29 @@ class Tests(unittest.TestCase):
         with self.assertRaises(s.ApiError):s.dispatch('GET','/students?class_id='+str(other_id),{},self.tokens[2])
     def test_wsgi_json_pdf_and_auth(self):
         import app,io
-        def call(path,token='',data=None):
+        def call(path,token='',data=None,extra=None):
             raw=json.dumps(data).encode() if data is not None else b''
             parts=path.split('?',1);headers=[]
-            result=app.application({'REQUEST_METHOD':'POST' if data is not None else 'GET','PATH_INFO':parts[0],'QUERY_STRING':parts[1] if len(parts)>1 else '', 'CONTENT_LENGTH':str(len(raw)),'wsgi.input':io.BytesIO(raw),'HTTP_AUTHORIZATION':'Bearer '+token,'REMOTE_ADDR':'test'},lambda status,h:headers.extend([status,h]))
+            env={'REQUEST_METHOD':'POST' if data is not None else 'GET','PATH_INFO':parts[0],'QUERY_STRING':parts[1] if len(parts)>1 else '', 'CONTENT_LENGTH':str(len(raw)),'wsgi.input':io.BytesIO(raw),'HTTP_AUTHORIZATION':'Bearer '+token,'REMOTE_ADDR':'test'}
+            env.update(extra or {})
+            result=app.application(env,lambda status,h:headers.extend([status,h]))
             return headers,b''.join(result)
         self.assertTrue(call('/classes')[0][0].startswith('401'))
         self.submit();headers,body=call('/pdf?day=2026-09-16',self.tokens[1]);self.assertTrue(headers[0].startswith('200'));self.assertTrue(body.startswith(b'%PDF'))
         self.assertTrue(call('/users',self.tokens[2],{'login':'evil','password':'long-password','name':'X'})[0][0].startswith('403'))
+        with patch.dict(os.environ,{'CRON_SECRET':'test-secret'}):
+            self.assertTrue(call('/cron/noon')[0][0].startswith('403'))
+            self.assertTrue(call('/cron/noon',extra={'HTTP_X_CRON_SECRET':'test-secret'})[0][0].startswith('200'))
+    def test_proxy_ip_and_failed_login_rate_limit(self):
+        import app
+        app._LIMITS.clear()
+        env={'REMOTE_ADDR':'127.0.0.1','HTTP_X_REAL_IP':'203.0.113.8'}
+        self.assertEqual(app._client_ip(env),'203.0.113.8')
+        key=app._login_key(env,{'school':'MAKTAB','login':'user2'})
+        for _ in range(10):app._record_login_failure(key)
+        with self.assertRaises(s.ApiError) as error:app._check_login_limit(key)
+        self.assertEqual(error.exception.status,429)
+        app._clear_login_failures(key);app._check_login_limit(key)
     def test_districts_do_not_mix(self):
         pw=s.password_hash('secret-pass')
         with s.connect() as c:
