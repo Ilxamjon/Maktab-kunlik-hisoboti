@@ -6,7 +6,12 @@ CREATE TABLE IF NOT EXISTS schools(
  executor TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS users(
  id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id), school_id BIGINT REFERENCES schools(id),
- login TEXT NOT NULL, password TEXT, role TEXT NOT NULL CHECK(role IN ('district','admin','teacher')), name TEXT NOT NULL DEFAULT '');
+ login TEXT NOT NULL, password TEXT, role TEXT NOT NULL CHECK(role IN ('district','admin','teacher')), name TEXT NOT NULL DEFAULT '',
+ google_sub TEXT, email TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active');
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_school_login ON users(school_id,login) WHERE school_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_district_login ON users(district_id,login) WHERE school_id IS NULL;
 CREATE TABLE IF NOT EXISTS classes(

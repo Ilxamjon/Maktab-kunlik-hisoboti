@@ -203,6 +203,16 @@ def migrate_v4(c):
     c.execute('PRAGMA foreign_keys=ON')
     c.execute('PRAGMA user_version=4')
 
+def migrate_v5(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=5:return
+    cols=_columns(c,'users')
+    if 'google_sub' not in cols:c.execute('ALTER TABLE users ADD COLUMN google_sub TEXT')
+    if 'email' not in cols:c.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+    if 'status' not in cols:c.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL')
+    c.execute('PRAGMA user_version=5')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -225,7 +235,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -280,7 +290,58 @@ def day_value(s):
 def authenticate(c,token):
     u=c.execute('SELECT u.* FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.token=? AND s.expires>?',(hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
     if not u: raise ApiError('Qayta kiring',401)
+    if 'status' in u.keys() and u['status']!='active':raise ApiError('Direktor o‘rinbosari tasdig‘i kutilmoqda',403)
     return dict(u)
+
+def verify_google_id_token(id_token):
+    if not isinstance(id_token,str) or not id_token:raise ApiError('Google orqali qayta kiring',401)
+    client_id=os.getenv('GOOGLE_CLIENT_ID','').strip()
+    if not client_id:raise ApiError('Google kirish serverda sozlanmagan',503)
+    req=Request('https://oauth2.googleapis.com/tokeninfo?id_token='+id_token,headers={'Accept':'application/json'})
+    try:
+        with urlopen(req,timeout=10) as response:profile=json.load(response)
+    except Exception:raise ApiError('Google token tasdiqlanmadi',401)
+    if profile.get('aud')!=client_id or profile.get('email_verified') not in ('true',True):raise ApiError('Google akkaunt tasdiqlanmadi',401)
+    return {'sub':text_value(profile,'sub',255),'email':text_value(profile,'email',255),'name':(profile.get('name') or profile.get('email') or '')[:150]}
+
+def new_session(c,user_id):
+    raw=secrets.token_urlsafe(32)
+    c.execute('DELETE FROM sessions WHERE expires<?',(time.time(),))
+    c.execute('INSERT INTO sessions VALUES(?,?,?)',(hashlib.sha256(raw.encode()).hexdigest(),user_id,time.time()+43200))
+    return raw
+
+def public_catalog(c):
+    return {'districts':[{'id':d['id'],'code':d['code'],'name':d['name'],'schools':[dict(s) for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY name',(d['id'],))]} for d in c.execute('SELECT id,code,name FROM districts ORDER BY name')]}
+
+def google_onboarding(c,data):
+    profile=verify_google_id_token(data.get('id_token'))
+    existing=c.execute('SELECT * FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()
+    if existing:
+        if existing['status']!='active':return {'pending':True,'name':existing['name']}
+        return {'token':new_session(c,existing['id']),'role':existing['role'],'pending':False}
+    district_id=data.get('district_id');district_name=(data.get('district_name') or '').strip()
+    district=c.execute('SELECT * FROM districts WHERE id=?',(district_id,)).fetchone() if district_id else None
+    if not district:
+        if not district_name:raise ApiError('Tumanni tanlang yoki nomini kiriting')
+        code='D'+hashlib.sha256(district_name.lower().encode()).hexdigest()[:10].upper()
+        c.execute('INSERT INTO districts(code,name) VALUES(?,?) ON CONFLICT(code) DO NOTHING',(code,district_name[:150]))
+        district=c.execute('SELECT * FROM districts WHERE code=?',(code,)).fetchone()
+    school_id=data.get('school_id');school_name=(data.get('school_name') or '').strip()
+    school=c.execute('SELECT * FROM schools WHERE id=? AND district_id=?',(school_id,district['id'])).fetchone() if school_id else None
+    if not school:
+        if not school_name:raise ApiError('Maktabni tanlang yoki nomini kiriting')
+        code=district['code']+'-'+hashlib.sha256(school_name.lower().encode()).hexdigest()[:6].upper()
+        c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?) ON CONFLICT(code) DO NOTHING',(district['id'],code,school_name[:150]))
+        school=c.execute('SELECT * FROM schools WHERE code=?',(code,)).fetchone()
+    first=not c.execute("SELECT 1 FROM users WHERE school_id=? AND role='admin' AND status='active'",(school['id'],)).fetchone()
+    role='admin' if first else 'teacher';status='active' if first else 'pending'
+    c.execute('INSERT INTO users(district_id,school_id,login,password,role,name,google_sub,email,status) VALUES(?,?,?,NULL,?,?,?,?,?)',(district['id'],school['id'],profile['email'],role,profile['name'],profile['sub'],profile['email'],status))
+    uid=c.execute('SELECT id FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()[0]
+    class_name=(data.get('class_name') or '').strip()
+    if role=='teacher':
+        if not class_name:raise ApiError('Sinfni tanlang yoki kiriting')
+        c.execute('INSERT INTO classes(school_id,name,teacher) VALUES(?,?,?) ON CONFLICT(school_id,name) DO NOTHING',(school['id'],class_name[:30],uid))
+    return {'token':new_session(c,uid) if status=='active' else None,'role':role,'pending':status!='active','school':school['name']}
 
 def authorize_class(c,u,cid):
     row=c.execute('SELECT * FROM classes WHERE id=? AND school_id=?',(cid,u['school_id'])).fetchone()
@@ -380,6 +441,14 @@ def dispatch_district(c,u,method,route,query,data,token=''):
 def dispatch(method,path,data,token=''):
     split=urlsplit(path);route=split.path;query=parse_qs(split.query)
     with connect() as c:
+        if route=='/catalog' and method=='GET':return public_catalog(c)
+        if route=='/auth/google' and method=='POST':
+            profile=verify_google_id_token(data.get('id_token'))
+            u=c.execute('SELECT * FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()
+            if not u:return {'onboarding':True,'profile':{'name':profile['name'],'email':profile['email']}}
+            if u['status']!='active':return {'pending':True,'onboarding':False,'name':u['name']}
+            return {'token':new_session(c,u['id']),'role':u['role'],'pending':False,'onboarding':False,'name':u['name']}
+        if route=='/onboarding' and method=='POST':return google_onboarding(c,data)
         if route=='/login' and method=='POST':
             kind,org=find_login_target(c,data)
             if kind=='district':
@@ -462,6 +531,15 @@ def dispatch(method,path,data,token=''):
                 c.execute('INSERT INTO audit(day,class_id,user_id,payload,created) VALUES(?,?,?,?,?)',(day,cid,u['id'],payload,time.time()))
                 return {'ok':True,'revision':rev}
         if u['role']!='admin':raise ApiError('Faqat direktor o‘rinbosari uchun',403)
+        if route=='/members':
+            if method=='POST':
+                member=c.execute("SELECT id FROM users WHERE id=? AND school_id=? AND role='teacher'",(data.get('user_id'),sid)).fetchone()
+                if not member:raise ApiError('Sinf rahbari topilmadi',404)
+                approved=data.get('approved')
+                if type(approved)!=bool:raise ApiError('Tasdiqlash holati kerak')
+                c.execute("UPDATE users SET status=? WHERE id=? AND school_id=?",('active' if approved else 'rejected',member['id'],sid))
+                c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
+            return {'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role='teacher' ORDER BY u.status,u.name",(sid,))]}
         if route=='/settings':
             if method=='POST':
                 name=text_value(data,'name',150);director=text_value(data,'director',150);executor=text_value(data,'executor',150)
@@ -578,7 +656,11 @@ def process_one():
         LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
     else:
-        with connect() as c:c.execute("UPDATE outbox SET state='sent',attempts=attempts+1 WHERE id=?",(row['id'],))
+        with connect() as c:
+            if row['kind']!='monthly':
+                c.execute('DELETE FROM audit WHERE day=? AND class_id IN (SELECT id FROM classes WHERE school_id=?)',(row['day'],row['school_id']))
+                c.execute('DELETE FROM reports WHERE school_id=? AND day=?',(row['school_id'],row['day']))
+            c.execute('DELETE FROM outbox WHERE id=?',(row['id'],))
     return True
 
 def worker():

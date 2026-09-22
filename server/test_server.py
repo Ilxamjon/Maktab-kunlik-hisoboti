@@ -27,6 +27,25 @@ class Tests(unittest.TestCase):
     def test_authentication(self):
         with self.assertRaises(s.ApiError):s.dispatch('GET','/classes',{},'invalid')
         with self.assertRaises(s.ApiError):s.dispatch('POST','/login',{'login':'user2','password':'wrong'})
+    def test_google_onboarding_first_user_and_pending_teacher(self):
+        with s.connect() as c:
+            c.execute("INSERT INTO schools(district_id,code,name) VALUES(?,'TEST-NEW','Yangi maktab')",(self.did,))
+            onboarding_sid=c.execute("SELECT id FROM schools WHERE code='TEST-NEW'").fetchone()[0]
+        profiles=[{'sub':'google-admin','email':'admin@example.com','name':'Admin'}, {'sub':'google-teacher','email':'teacher@example.com','name':'Teacher'}]
+        with patch.object(s,'verify_google_id_token',side_effect=profiles):
+            admin=s.dispatch('POST','/onboarding',{'id_token':'a','district_id':self.did,'school_id':onboarding_sid})
+            teacher=s.dispatch('POST','/onboarding',{'id_token':'b','district_id':self.did,'school_id':onboarding_sid,'class_name':'5-A'})
+        self.assertEqual(admin['role'],'admin');self.assertFalse(admin['pending']);self.assertTrue(admin['token'])
+        self.assertEqual(teacher['role'],'teacher');self.assertTrue(teacher['pending']);self.assertIsNone(teacher['token'])
+        members=s.dispatch('GET','/members',{},admin['token'])['members']
+        self.assertEqual(members[0]['class_name'],'5-A');self.assertEqual(members[0]['status'],'pending')
+        s.dispatch('POST','/members',{'user_id':members[0]['id'],'approved':True},admin['token'])
+        with patch.object(s,'verify_google_id_token',return_value=profiles[1]):
+            login=s.dispatch('POST','/auth/google',{'id_token':'b'})
+        self.assertEqual(login['role'],'teacher');self.assertTrue(login['token'])
+    def test_public_catalog(self):
+        catalog=s.dispatch('GET','/catalog',{})
+        self.assertEqual(catalog['districts'][0]['schools'][0]['id'],self.sid)
     def test_other_class_and_admin_protection(self):
         with self.assertRaises(s.ApiError):s.dispatch('GET','/students?class_id=2',{},self.tokens[2])
         with self.assertRaises(s.ApiError):s.dispatch('GET','/summary?day=2026-09-16',{},self.tokens[2])
@@ -72,7 +91,10 @@ class Tests(unittest.TestCase):
             with s.connect() as c:
                 row=c.execute('SELECT * FROM outbox').fetchone();self.assertEqual(row['state'],'pending');self.assertEqual(row['attempts'],1);c.execute('UPDATE outbox SET next_try=0')
             with patch.object(s,'send_document') as send:s.process_one();send.assert_called_once()
-        with s.connect() as c:self.assertEqual(c.execute('SELECT state FROM outbox').fetchone()[0],'sent')
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM outbox').fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT count(*) FROM reports WHERE day='2026-09-16'").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT count(*) FROM audit WHERE day='2026-09-16'").fetchone()[0],0)
     def test_logout(self):
         s.dispatch('POST','/logout',{},self.tokens[2])
         with self.assertRaises(s.ApiError):s.dispatch('GET','/classes',{},self.tokens[2])
