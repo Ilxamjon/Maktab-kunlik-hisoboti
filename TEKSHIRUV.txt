@@ -1,4 +1,4 @@
-Maktab Hisobot 0.4 — sinov holati
+Maktab Hisobot 0.6 — Neon production tayyorlash
 
 Server: avtomatik testlar (maktab izolyatsiyasi, tuman izolyatsiyasi, 12:00 PDF, 7-A nomlari aralashmasligi).
 Tekshirildi: autentifikatsiya, sinflar bo'yicha ruxsat, administrator cheklovi,
@@ -11,5 +11,5 @@ parol almashtirish va sessiyani bekor qilish, WSGI API.
 PDF: uch varaq. Faqat sun'iy ma'lumot ishlatilgan.
 Telegram testi: mock; haqiqiy xabar yuborilmadi.
 Windows CMD: bu muhitda sinov qilinmagan.
-Android: assembleDebug. Versiya 0.4.
+Android: assembleDebug. Versiya 0.6.
 Qurilmada to'liq foydalanuvchi jarayoni hali sinovdan o'tmagan.

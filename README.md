@@ -1,4 +1,37 @@
-# Maktab Hisobot — Android va Telegram, 0.4
+# Maktab Hisobot — Android, Neon va Telegram, 0.6
+
+## Neon + bepul API hosting
+
+Production rejimida ma‘lumotlar Neon PostgreSQL bazasida saqlanadi. Python API alohida bepul
+Render Web Service’da ishlaydi. Render vaqtincha uxlaganda ham GitHub Actions har kuni 12:05
+(O‘zbekiston vaqti) `/cron/noon` endpointini uyg‘otib, har bir maktab PDFini o‘z Telegramiga yuboradi.
+
+Kerakli maxfiy qiymatlar:
+
+- Render `DATABASE_URL`: Neon pooled connection string (`-pooler` host).
+- Render `CRON_SECRET`: kamida 32 belgili tasodifiy qiymat.
+- GitHub Actions `API_URL`: Render HTTPS manzili, oxirida `/` yo‘q.
+- GitHub Actions `CRON_SECRET`: Render’dagi bilan aynan bir xil.
+
+`render.yaml` Render Blueprint uchun, `.github/workflows/noon.yml` esa 12:05 yuborish uchun tayyor.
+`school.db` endi production ma‘lumotlar manbai emas; u faqat lokal sinovda ishlatiladi.
+
+## Tavsiya etilgan ommaviy tuzilma
+
+Bu loyiha uchun **bitta markaziy, doimo ishlaydigan server kerak**. Google Drive server emas;
+u Android ilovalarining login, davomat, PDF yaratish va Telegram yuborish so‘rovlarini bajara
+olmaydi. Drive faqat shifrlangan zaxira nusxalarini saqlash uchun ishlatilishi mumkin.
+
+Tizimdagi ajratish quyidagicha ishlaydi:
+
+- `XOJ` — Xo‘jayli tumani xodimi; tumandagi maktablar holatini ko‘radi.
+- `XOJ-18` — 18-maktab; uning direktor o‘rinbosari va sinf rahbarlari faqat shu maktab ma‘lumotlarini ko‘radi.
+- Har maktab alohida Telegram chatiga ulanadi. `XOJ-18` hisoboti boshqa maktabga yuborilmaydi.
+- O‘quvchi F.I.Sh. va manzillari tuman xodimiga ochilmaydi.
+
+Production ma‘lumotlari Neon PostgreSQL’da doimiy saqlanadi. Shu sabab Render Free web-servisi
+qayta ishga tushsa ham maktablar, o‘quvchilar va hisobotlar yo‘qolmaydi. SQLite faqat kompyuterdagi
+lokal sinov uchun qoldirilgan.
 
 Ilova sinf rahbarlarining kunlik davomatini yig'adi. **Bitta markaziy server** barcha tumanlar va maktablar uchun. Masalan Xo‘jayli tumanida 42 ta maktab bo‘lsa, ularning har biri o‘z kodi bilan kiradi; hisobotlar aralashmaydi. Har kuni soat **12:00** (O‘zbekiston vaqti) server har bir maktabning jo‘natilgan hisobotlarini jamlab, o‘sha maktab direktor o‘rinbosari Telegramiga **3 varaqli PDF** yuboradi.
 
@@ -70,7 +103,7 @@ sudo systemctl enable --now maktab-hisobot
 curl https://SIZNING_DOMEN/health
 ```
 
-Javobda `"version": "0.4"` ko‘rinsa, server ishlayapti. Ilovada server manzili: `https://SIZNING_DOMEN` (oxirida `/` yo‘q, port yozilmaydi).
+Javobda `"version": "0.6"` va `"database": "postgres"` ko‘rinsa, Neon ulanishi ishlayapti.
 
 Telegram: har maktab uchun serverda
 
@@ -83,13 +116,21 @@ Soat 12:00 dastur ichida O‘zbekiston vaqti (UTC+5) bilan hisoblanadi. VPS qaye
 
 ### Zaxira
 
-Har kuni `school.db` nusxasini oling. Serverni o‘chirmasdan ham nusxa olish mumkin:
+Neon production bazasi uchun Neon history/restore ishlatiladi. Quyidagi SQLite timer faqat
+VPS yoki lokal SQLite rejimida kerak:
+
+O‘rnatish skripti har kuni soat 01:30 da xavfsiz SQLite backup yaratadigan systemd timer ham
+o‘rnatadi. Uni yoqish va tekshirish:
 
 ```bash
-sudo -u maktab cp /opt/maktabhisobot/server/school.db /opt/maktabhisobot/server/school.db.bak
+sudo systemctl enable --now maktab-hisobot-backup.timer
+sudo systemctl list-timers maktab-hisobot-backup.timer
+sudo systemctl start maktab-hisobot-backup.service
+ls -l /opt/maktabhisobot/backup
 ```
 
-Bu fayl va `config.json` ni GitHubga qo‘ymang.
+Oxirgi 30 kunlik nusxalar saqlanadi. Backup papkasini serverdan tashqaridagi yopiq joyga ham
+nusxalash kerak. `school.db`, backup va `config.json` ni GitHubga qo‘ymang.
 
 Namunalar: `server/deploy/nginx.conf.example`, `server/deploy/maktab-hisobot.service`.
 
@@ -144,7 +185,7 @@ Oylik foiz = kelgan o'quvchi-kunlar / topshirilgan jami o'quvchi-kunlar × 100.
 ## Server va manba kodi
 
 - `android/` — native Java loyiha.
-- `server/` — SQLite (WAL), PDF va Telegram navbati, Waitress WSGI. Ertalabki bir vaqtdagi yuborishlar uchun WAL va `busy_timeout` yoqilgan.
+- `server/` — productionda Neon PostgreSQL, lokal sinovda SQLite; PDF, Telegram navbati va Waitress WSGI.
 - APK uchun Android 8.0 (API 26) yoki yangiroq telefon kerak.
 - Build: JDK 17, Gradle 8.9, Android SDK 35, Build Tools 35.0.0, AGP 8.7.3.
 
