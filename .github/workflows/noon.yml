@@ -1,0 +1,21 @@
+name: Noon Telegram delivery
+
+on:
+  schedule:
+    - cron: "5 7 * * *" # 12:05 Asia/Tashkent (UTC+5)
+  workflow_dispatch:
+
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake API and send school digests
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          test -n "$API_URL" && test -n "$CRON_SECRET"
+          curl --fail --retry 3 --retry-all-errors --max-time 180 \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            "$API_URL/cron/noon"
