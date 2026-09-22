@@ -4,6 +4,11 @@ android {
     compileSdk 35
     buildToolsVersion '35.0.0'
     buildFeatures { buildConfig true }
-    defaultConfig { applicationId 'uz.maktab.hisobot'; minSdk 26; targetSdk 35; versionCode 7; versionName '0.7' }
+    defaultConfig { applicationId 'uz.maktab.hisobot'; minSdk 26; targetSdk 35; versionCode 8; versionName '0.8' }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies {
+    implementation 'androidx.credentials:credentials:1.5.0'
+    implementation 'androidx.credentials:credentials-play-services-auth:1.5.0'
+    implementation 'com.google.android.libraries.identity.googleid:googleid:1.1.1'
 }
