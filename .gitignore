@@ -1,7 +1,10 @@
 *.db
 *.db-*
+server/backups/
+backup/
 .env
 .venv/
+.audit-venv/
 __pycache__/
 .gradle/
 .idea/
