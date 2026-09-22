@@ -20,7 +20,7 @@ jobs:
         run: |
           git config user.name "MaktabHisobot Updater"
           git config user.email "actions@users.noreply.github.com"
-          git am .github/workflows/v06-update.patch
+          git apply --index .github/workflows/v06-update.patch
           git rm .github/workflows/apply-v06.yml .github/workflows/v06-update.patch
-          git commit -m "Remove one-time v0.6 updater"
+          git commit -m "Migrate production storage to Neon Postgres"
           git push origin main
