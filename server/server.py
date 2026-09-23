@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from catalog import REASONS, COLUMN_ORDER
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urlencode
 from urllib.request import Request, urlopen
 ROOT=Path(__file__).parent
 LOG=logging.getLogger('maktab-hisobot.worker')
@@ -213,6 +213,14 @@ def migrate_v5(c):
     c.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL')
     c.execute('PRAGMA user_version=5')
 
+def migrate_v6(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=6:return
+    cols=_columns(c,'schools')
+    if 'telegram_link_code' not in cols:c.execute("ALTER TABLE schools ADD COLUMN telegram_link_code TEXT NOT NULL DEFAULT ''")
+    if 'telegram_link_created' not in cols:c.execute('ALTER TABLE schools ADD COLUMN telegram_link_created REAL NOT NULL DEFAULT 0')
+    c.execute('PRAGMA user_version=6')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -235,7 +243,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -256,6 +264,16 @@ def telegram_for(school):
     token=school.get('telegram_bot_token') or os.getenv('TELEGRAM_BOT_TOKEN') or ''
     chat=school.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID') or ''
     return token,chat
+
+def telegram_api(token,method,params=None):
+    if not token or not re.fullmatch(r'[0-9]{5,15}:[A-Za-z0-9_-]{20,80}',token):raise ApiError('Telegram Bot token noto‘g‘ri')
+    url='https://api.telegram.org/bot'+token+'/'+method
+    if params:url+='?'+urlencode(params)
+    try:
+        with urlopen(Request(url,headers={'Accept':'application/json'}),timeout=15) as response:result=json.load(response)
+    except Exception:raise ApiError('Telegram bilan bog‘lanib bo‘lmadi. Internet va Bot tokenni tekshiring',502)
+    if not result.get('ok'):raise ApiError('Telegram Bot token qabul qilinmadi',400)
+    return result.get('result')
 
 def month_value(s):
     try:
@@ -311,13 +329,22 @@ def new_session(c,user_id):
     return raw
 
 def public_catalog(c):
-    return {'districts':[{'id':d['id'],'code':d['code'],'name':d['name'],'schools':[dict(s) for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY name',(d['id'],))]} for d in c.execute('SELECT id,code,name FROM districts ORDER BY name')]}
+    result=[]
+    for d in c.execute('SELECT id,code,name FROM districts ORDER BY name'):
+        schools=[]
+        for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY name',(d['id'],)):
+            item=dict(s);item['classes']=[dict(cl) for cl in c.execute('SELECT id,name FROM classes WHERE school_id=? ORDER BY name',(s['id'],))];schools.append(item)
+        result.append({'id':d['id'],'code':d['code'],'name':d['name'],'schools':schools})
+    return {'districts':result}
 
 def google_onboarding(c,data):
     profile=verify_google_id_token(data.get('id_token'))
     existing=c.execute('SELECT * FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()
     if existing:
-        if existing['status']!='active':return {'pending':True,'name':existing['name']}
+        if existing['status']=='rejected':
+            c.execute('UPDATE classes SET teacher=NULL WHERE teacher=?',(existing['id'],));c.execute('DELETE FROM sessions WHERE user_id=?',(existing['id'],));c.execute('DELETE FROM users WHERE id=?',(existing['id'],));existing=None
+        elif existing['status']!='active':return {'pending':True,'rejected':False,'name':existing['name']}
+    if existing:
         return {'token':new_session(c,existing['id']),'role':existing['role'],'pending':False}
     district_id=data.get('district_id');district_name=(data.get('district_name') or '').strip()
     district=c.execute('SELECT * FROM districts WHERE id=?',(district_id,)).fetchone() if district_id else None
@@ -333,14 +360,21 @@ def google_onboarding(c,data):
         code=district['code']+'-'+hashlib.sha256(school_name.lower().encode()).hexdigest()[:6].upper()
         c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?) ON CONFLICT(code) DO NOTHING',(district['id'],code,school_name[:150]))
         school=c.execute('SELECT * FROM schools WHERE code=?',(code,)).fetchone()
+    desired=data.get('role','teacher')
+    if desired not in ('admin','teacher'):raise ApiError('Lavozimni tanlang')
     first=not c.execute("SELECT 1 FROM users WHERE school_id=? AND role='admin' AND status='active'",(school['id'],)).fetchone()
+    if not first and desired=='admin':raise ApiError('Bu maktabda direktor o‘rinbosari mavjud. Sinf rahbari lavozimini tanlang',409)
     role='admin' if first else 'teacher';status='active' if first else 'pending'
     c.execute('INSERT INTO users(district_id,school_id,login,password,role,name,google_sub,email,status) VALUES(?,?,?,NULL,?,?,?,?,?)',(district['id'],school['id'],profile['email'],role,profile['name'],profile['sub'],profile['email'],status))
     uid=c.execute('SELECT id FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()[0]
     class_name=(data.get('class_name') or '').strip()
     if role=='teacher':
         if not class_name:raise ApiError('Sinfni tanlang yoki kiriting')
-        c.execute('INSERT INTO classes(school_id,name,teacher) VALUES(?,?,?) ON CONFLICT(school_id,name) DO NOTHING',(school['id'],class_name[:30],uid))
+        class_name=class_name[:30]
+        found=c.execute('SELECT * FROM classes WHERE school_id=? AND name=?',(school['id'],class_name)).fetchone()
+        if found and found['teacher'] not in (None,uid):raise ApiError('Bu sinf boshqa sinf rahbariga biriktirilgan',409)
+        if found:c.execute('UPDATE classes SET teacher=? WHERE id=?',(uid,found['id']))
+        else:c.execute('INSERT INTO classes(school_id,name,teacher) VALUES(?,?,?)',(school['id'],class_name,uid))
     return {'token':new_session(c,uid) if status=='active' else None,'role':role,'pending':status!='active','school':school['name']}
 
 def authorize_class(c,u,cid):
@@ -446,7 +480,8 @@ def dispatch(method,path,data,token=''):
             profile=verify_google_id_token(data.get('id_token'))
             u=c.execute('SELECT * FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()
             if not u:return {'onboarding':True,'profile':{'name':profile['name'],'email':profile['email']}}
-            if u['status']!='active':return {'pending':True,'onboarding':False,'name':u['name']}
+            if u['status']=='rejected':return {'pending':False,'rejected':True,'onboarding':True,'profile':{'name':u['name'],'email':u['email']}}
+            if u['status']!='active':return {'pending':True,'rejected':False,'onboarding':False,'name':u['name']}
             return {'token':new_session(c,u['id']),'role':u['role'],'pending':False,'onboarding':False,'name':u['name']}
         if route=='/onboarding' and method=='POST':return google_onboarding(c,data)
         if route=='/login' and method=='POST':
@@ -538,6 +573,7 @@ def dispatch(method,path,data,token=''):
                 approved=data.get('approved')
                 if type(approved)!=bool:raise ApiError('Tasdiqlash holati kerak')
                 c.execute("UPDATE users SET status=? WHERE id=? AND school_id=?",('active' if approved else 'rejected',member['id'],sid))
+                if not approved:c.execute('UPDATE classes SET teacher=NULL WHERE teacher=?',(member['id'],))
                 c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
             return {'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role='teacher' ORDER BY u.status,u.name",(sid,))]}
         if route=='/settings':
@@ -546,6 +582,25 @@ def dispatch(method,path,data,token=''):
                 c.execute('UPDATE schools SET name=?,director=?,executor=? WHERE id=?',(name,director,executor,sid))
             info=school_settings(c,sid);token,chat=telegram_for(school_row(c,sid))
             return {'school':info,'telegram_configured':bool(token and chat)}
+        if route=='/telegram/setup/start' and method=='POST':
+            supplied=(data.get('bot_token') or '').strip()
+            school=school_row(c,sid);token=supplied or telegram_for(school)[0]
+            me=telegram_api(token,'getMe');username=me.get('username') or ''
+            if not username:raise ApiError('Telegram bot username topilmadi')
+            code=secrets.token_urlsafe(12).replace('-','').replace('_','')
+            c.execute('UPDATE schools SET telegram_bot_token=?,telegram_link_code=?,telegram_link_created=? WHERE id=?',(supplied or school.get('telegram_bot_token',''),code,time.time(),sid))
+            return {'url':'https://t.me/'+username+'?start='+code,'bot_username':'@'+username,'message':'Telegram ochilgach Start tugmasini bosing'}
+        if route=='/telegram/setup/finish' and method=='POST':
+            school=school_row(c,sid);token,_=telegram_for(school);code=school.get('telegram_link_code') or ''
+            if not code or time.time()-float(school.get('telegram_link_created') or 0)>1800:raise ApiError('Ulash muddati tugagan. Qaytadan boshlang')
+            updates=telegram_api(token,'getUpdates',{'limit':100,'timeout':0});chat_id=''
+            for update in reversed(updates or []):
+                msg=update.get('message') or update.get('channel_post') or {};text=msg.get('text') or ''
+                if text.strip() in ('/start '+code,'/start@'+(msg.get('via_bot',{}).get('username') or '')+' '+code):
+                    chat=msg.get('chat') or {};chat_id=str(chat.get('id') or '');break
+            if not chat_id:raise ApiError('Telegramda botni ochib Start tugmasini bosing, keyin qayta tekshiring',409)
+            c.execute("UPDATE schools SET telegram_chat_id=?,telegram_link_code='',telegram_link_created=0 WHERE id=?",(chat_id,sid))
+            return {'ok':True,'message':'Telegram muvaffaqiyatli ulandi'}
         if route=='/users':
             if method=='POST':
                 login=text_value(data,'login',80);pw=text_value(data,'password',256);full=text_value(data,'name',150)

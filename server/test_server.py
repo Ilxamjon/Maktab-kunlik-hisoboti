@@ -46,6 +46,39 @@ class Tests(unittest.TestCase):
     def test_public_catalog(self):
         catalog=s.dispatch('GET','/catalog',{})
         self.assertEqual(catalog['districts'][0]['schools'][0]['id'],self.sid)
+        self.assertEqual(len(catalog['districts'][0]['schools'][0]['classes']),2)
+
+    def test_second_deputy_is_not_allowed(self):
+        profile={'sub':'second-admin','email':'second@example.com','name':'Second'}
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            with self.assertRaises(s.ApiError) as error:
+                s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'admin'})
+        self.assertEqual(error.exception.status,409)
+
+    def test_rejected_teacher_can_apply_again(self):
+        profile={'sub':'retry-teacher','email':'retry@example.com','name':'Retry'}
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            first=s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'teacher','class_name':'8-A'})
+        self.assertTrue(first['pending'])
+        member=s.dispatch('GET','/members',{},self.tokens[1])['members']
+        uid=next(x['id'] for x in member if x['email']=='retry@example.com')
+        s.dispatch('POST','/members',{'user_id':uid,'approved':False},self.tokens[1])
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            auth=s.dispatch('POST','/auth/google',{'id_token':'x'})
+            self.assertTrue(auth['rejected']);self.assertTrue(auth['onboarding'])
+            again=s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'teacher','class_name':'8-A'})
+        self.assertTrue(again['pending'])
+
+    def test_telegram_link_flow(self):
+        fake='123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij'
+        with patch.object(s,'telegram_api') as api:
+            api.side_effect=[{'username':'MaktabTestBot'},[{'message':{'text':'/start LINKCODE','chat':{'id':778899}}}]]
+            started=s.dispatch('POST','/telegram/setup/start',{'bot_token':fake},self.tokens[1])
+            self.assertIn('t.me/MaktabTestBot',started['url'])
+            with s.connect() as c:c.execute("UPDATE schools SET telegram_link_code='LINKCODE',telegram_link_created=? WHERE id=?",(s.time.time(),self.sid))
+            finished=s.dispatch('POST','/telegram/setup/finish',{},self.tokens[1])
+        self.assertTrue(finished['ok'])
+        with s.connect() as c:self.assertEqual(c.execute('SELECT telegram_chat_id FROM schools WHERE id=?',(self.sid,)).fetchone()[0],'778899')
     def test_other_class_and_admin_protection(self):
         with self.assertRaises(s.ApiError):s.dispatch('GET','/students?class_id=2',{},self.tokens[2])
         with self.assertRaises(s.ApiError):s.dispatch('GET','/summary?day=2026-09-16',{},self.tokens[2])

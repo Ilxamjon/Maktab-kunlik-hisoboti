@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS schools(
  id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id),
  code TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', director TEXT NOT NULL DEFAULT '',
  executor TEXT NOT NULL DEFAULT '', telegram_bot_token TEXT NOT NULL DEFAULT '', telegram_chat_id TEXT NOT NULL DEFAULT '');
+ALTER TABLE schools ADD COLUMN IF NOT EXISTS telegram_link_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE schools ADD COLUMN IF NOT EXISTS telegram_link_created DOUBLE PRECISION NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS users(
  id BIGSERIAL PRIMARY KEY, district_id BIGINT NOT NULL REFERENCES districts(id), school_id BIGINT REFERENCES schools(id),
  login TEXT NOT NULL, password TEXT, role TEXT NOT NULL CHECK(role IN ('district','admin','teacher')), name TEXT NOT NULL DEFAULT '',
