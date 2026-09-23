@@ -8,6 +8,9 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s')
 LOG=logging.getLogger('maktab-hisobot')
 _LIMITS={};_LOCK=threading.Lock()
+# Waitress imports this module instead of running its __main__ block. Run the
+# idempotent schema/catalog migration here so every production deploy is ready.
+server.init()
 
 def _client_ip(environ):
     """Trust nginx's real IP only when Waitress is reached through loopback."""
