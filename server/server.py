@@ -640,10 +640,23 @@ def dispatch(method,path,data,token=''):
             if method=='POST':
                 member=c.execute("SELECT id,role,status FROM users WHERE id=? AND school_id=? AND role IN ('teacher','admin')",(data.get('user_id'),sid)).fetchone()
                 if not member:raise ApiError('Sinf rahbari topilmadi',404)
+                action=data.get('action')
+                if action=='transfer_deputy':
+                    if member['role']!='teacher' or member['status'] not in ('pending','active'):
+                        raise ApiError('Vakolat faqat kutilayotgan yoki tasdiqlangan sinf rahbariga topshiriladi')
+                    current=c.execute("SELECT id FROM users WHERE id=? AND school_id=? AND role='admin' AND status='active'",(u['id'],sid)).fetchone()
+                    if not current:raise ApiError('Faol direktor o‘rinbosari topilmadi',409)
+                    c.execute("UPDATE users SET role='teacher' WHERE id=? AND school_id=? AND role='admin' AND status='active'",(u['id'],sid))
+                    c.execute("UPDATE users SET role='admin',status='active' WHERE id=? AND school_id=?",(member['id'],sid))
+                    c.execute('UPDATE classes SET teacher=NULL WHERE teacher=?',(member['id'],))
+                    c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
+                    return {'ok':True,'role':'teacher','deputy_transferred':True}
                 approved=data.get('approved')
                 if type(approved)!=bool:raise ApiError('Tasdiqlash holati kerak')
                 if member['status']!='pending':raise ApiError('Bu so‘rov avval ko‘rib chiqilgan',409)
                 if approved and member['role']=='admin':
+                    current=c.execute("SELECT id FROM users WHERE id=? AND school_id=? AND role='admin' AND status='active'",(u['id'],sid)).fetchone()
+                    if not current:raise ApiError('Faol direktor o‘rinbosari topilmadi',409)
                     c.execute("UPDATE users SET role='teacher' WHERE id=? AND school_id=? AND role='admin' AND status='active'",(u['id'],sid))
                     c.execute("UPDATE users SET status='active' WHERE id=? AND school_id=?",(member['id'],sid))
                     c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
@@ -651,7 +664,9 @@ def dispatch(method,path,data,token=''):
                 c.execute("UPDATE users SET status=? WHERE id=? AND school_id=?",('active' if approved else 'rejected',member['id'],sid))
                 if not approved:c.execute('UPDATE classes SET teacher=NULL WHERE teacher=?',(member['id'],))
                 c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
-            return {'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,u.role,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role IN ('teacher','admin') AND (u.status='pending' OR u.role='teacher') ORDER BY u.status,u.name",(sid,))]}
+            members=[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,u.role,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role IN ('teacher','admin') AND (u.status='pending' OR u.role='teacher') ORDER BY u.status,u.name",(sid,))]
+            pending_count=c.execute("SELECT count(*) FROM users WHERE school_id=? AND role IN ('teacher','admin') AND status='pending'",(sid,)).fetchone()[0]
+            return {'members':members,'pending_count':pending_count}
         if route=='/settings':
             if method=='POST':
                 name=text_value(data,'name',150);director=text_value(data,'director',150);executor=text_value(data,'executor',150)

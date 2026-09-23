@@ -78,6 +78,33 @@ class Tests(unittest.TestCase):
             auth=s.dispatch('POST','/auth/google',{'id_token':'x'})
         self.assertEqual(auth['role'],'admin')
 
+    def test_admin_can_transfer_authority_to_pending_class_teacher(self):
+        profile={'sub':'real-deputy','email':'real-deputy@example.com','name':'Real Deputy'}
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            request=s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'teacher','class_name':'8-A'})
+        self.assertTrue(request['pending'])
+        members=s.dispatch('GET','/members',{},self.tokens[1])
+        self.assertEqual(members['pending_count'],1)
+        candidate=next(row for row in members['members'] if row['email']=='real-deputy@example.com')
+        result=s.dispatch('POST','/members',{'user_id':candidate['id'],'action':'transfer_deputy'},self.tokens[1])
+        self.assertTrue(result['deputy_transferred'])
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT role FROM users WHERE id=1').fetchone()[0],'teacher')
+            promoted=c.execute("SELECT id,role,status FROM users WHERE google_sub='real-deputy'").fetchone()
+            self.assertEqual((promoted['role'],promoted['status']),('admin','active'))
+            self.assertIsNone(c.execute('SELECT teacher FROM classes WHERE name=?',( '8-A',)).fetchone()[0])
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            auth=s.dispatch('POST','/auth/google',{'id_token':'x'})
+        self.assertEqual(auth['role'],'admin')
+
+    def test_admin_can_transfer_authority_to_active_class_teacher(self):
+        result=s.dispatch('POST','/members',{'user_id':2,'action':'transfer_deputy'},self.tokens[1])
+        self.assertTrue(result['deputy_transferred'])
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT role FROM users WHERE id=1').fetchone()[0],'teacher')
+            self.assertEqual(c.execute('SELECT role FROM users WHERE id=2').fetchone()[0],'admin')
+            self.assertIsNone(c.execute('SELECT teacher FROM classes WHERE id=1').fetchone()[0])
+
     def test_rejected_teacher_can_apply_again(self):
         profile={'sub':'retry-teacher','email':'retry@example.com','name':'Retry'}
         with patch.object(s,'verify_google_id_token',return_value=profile):

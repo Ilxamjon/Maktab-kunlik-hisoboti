@@ -29,23 +29,37 @@ public class MainActivity extends Activity {
     final ExecutorService pool=Executors.newSingleThreadExecutor();
     String[] reasons={"Kelgan"};
     JSONObject school=new JSONObject(); String pdfPath=""; Runnable draftSaver=null;
+    final Handler approvalHandler=new Handler(Looper.getMainLooper()); Runnable approvalPoll;
+    TextView approvalNotice; boolean adminHomeVisible=false;
     interface Task { JSONObject run() throws Exception; }
     interface Done { void run(JSONObject result) throws Exception; }
     @Override public void onCreate(Bundle b){super.onCreate(b); getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); login();}
     void screen(String title){
-        draftSaver=null;
+        draftSaver=null;adminHomeVisible=false;approvalHandler.removeCallbacksAndMessages(null);approvalNotice=null;
         getWindow().setStatusBarColor(Color.rgb(21,63,108));getWindow().setNavigationBarColor(Color.rgb(244,247,251));
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setClipToPadding(false);page=new LinearLayout(this);page.setOrientation(LinearLayout.VERTICAL);page.setPadding(22,32,22,28);page.setBackgroundColor(Color.rgb(244,247,251));scroll.addView(page);setContentView(scroll);
         scroll.setOnApplyWindowInsetsListener((v,insets)->{page.setPadding(22,Math.max(32,insets.getSystemWindowInsetTop()+12),22,Math.max(28,insets.getSystemWindowInsetBottom()+12));return insets;});
-        LinearLayout brand=new LinearLayout(this);brand.setOrientation(LinearLayout.HORIZONTAL);brand.setGravity(Gravity.CENTER_VERTICAL);brand.setPadding(16,13,16,13);brand.setBackground(rounded(Color.rgb(255,255,255),18));
+        LinearLayout brand=new LinearLayout(this);brand.setOrientation(LinearLayout.HORIZONTAL);brand.setGravity(Gravity.CENTER_VERTICAL);brand.setPadding(16,13,16,13);brand.setBackground(rounded(Color.rgb(255,255,255),18));brand.setElevation(2);
         TextView mark=new TextView(this);mark.setText("MH");mark.setTextColor(Color.WHITE);mark.setTextSize(15);mark.setTypeface(null,1);mark.setGravity(Gravity.CENTER);mark.setBackground(rounded(Color.rgb(27,81,134),13));brand.addView(mark,new LinearLayout.LayoutParams(44,44));
-        TextView brandName=new TextView(this);brandName.setText("MAKTAB HISOBOTI");brandName.setTextColor(Color.rgb(27,81,134));brandName.setTextSize(13);brandName.setLetterSpacing(.08f);brandName.setTypeface(null,1);LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2);bp.leftMargin=13;brand.addView(brandName,bp);page.addView(brand);
-        TextView header=new TextView(this);header.setText(title);header.setTextSize(25);header.setTextColor(Color.rgb(23,42,68));header.setTypeface(null,1);header.setPadding(2,24,2,12);page.addView(header);
+        LinearLayout brandText=new LinearLayout(this);brandText.setOrientation(LinearLayout.VERTICAL);
+        TextView brandName=new TextView(this);brandName.setText("MAKTAB HISOBOTI");brandName.setTextColor(Color.rgb(27,81,134));brandName.setTextSize(13);brandName.setLetterSpacing(.08f);brandName.setTypeface(null,1);brandText.addView(brandName);
+        TextView caption=new TextView(this);caption.setText("DAVOMAT VA HISOBOTLAR");caption.setTextColor(Color.rgb(132,148,168));caption.setTextSize(10);caption.setLetterSpacing(.07f);LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.topMargin=3;brandText.addView(caption,cp);
+        LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2);bp.leftMargin=13;brand.addView(brandText,bp);page.addView(brand);
+        TextView header=new TextView(this);header.setText(title);header.setTextSize(27);header.setTextColor(Color.rgb(23,42,68));header.setTypeface(null,1);header.setPadding(2,22,2,13);page.addView(header);
     }
     GradientDrawable rounded(int color,int radius){GradientDrawable bg=new GradientDrawable();bg.setColor(color);bg.setCornerRadius(radius);return bg;}
+    GradientDrawable outline(int color,int radius,int stroke){GradientDrawable bg=rounded(color,radius);bg.setStroke(1,stroke);return bg;}
     TextView label(String s){TextView t=new TextView(this);t.setText(s);t.setTextSize(15);t.setTextColor(Color.rgb(78,94,116));t.setLineSpacing(3,1f);t.setPadding(2,9,2,9);page.addView(t);return t;}
+    void section(String title){TextView t=new TextView(this);t.setText(title.toUpperCase(Locale.ROOT));t.setTextSize(11);t.setLetterSpacing(.08f);t.setTypeface(null,1);t.setTextColor(Color.rgb(120,139,161));t.setPadding(2,17,2,5);page.addView(t);}
+    TextView actionCard(String title,String subtitle,String icon,Runnable action){
+        LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.HORIZONTAL);card.setGravity(Gravity.CENTER_VERTICAL);card.setPadding(15,15,15,15);card.setBackground(outline(Color.WHITE,18,Color.rgb(232,238,245)));card.setElevation(2);
+        TextView badge=new TextView(this);badge.setText(icon);badge.setTextSize(19);badge.setTypeface(null,1);badge.setTextColor(Color.rgb(27,81,134));badge.setGravity(Gravity.CENTER);badge.setBackground(rounded(Color.rgb(232,241,250),14));card.addView(badge,new LinearLayout.LayoutParams(48,48));
+        LinearLayout copy=new LinearLayout(this);copy.setOrientation(LinearLayout.VERTICAL);copy.setPadding(13,0,8,0);TextView h=new TextView(this);h.setText(title);h.setTextSize(15);h.setTypeface(null,1);h.setTextColor(Color.rgb(27,43,64));copy.addView(h);TextView sub=new TextView(this);sub.setText(subtitle);sub.setTextSize(12);sub.setTextColor(Color.rgb(118,136,158));sub.setPadding(0,4,0,0);copy.addView(sub);
+        LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,-2,1);card.addView(copy,cp);TextView arrow=new TextView(this);arrow.setText("›");arrow.setTextSize(27);arrow.setTextColor(Color.rgb(131,151,174));card.addView(arrow);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,6,0,6);page.addView(card,lp);card.setOnClickListener(v->action.run());return h;
+    }
     EditText input(String hint,String value){EditText e=new EditText(this);e.setHint(hint);e.setText(value);e.setSingleLine(true);e.setTextSize(15);e.setTextColor(Color.rgb(31,45,65));e.setHintTextColor(Color.rgb(135,149,168));e.setPadding(16,13,16,13);e.setBackground(rounded(Color.WHITE,13));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,6,0,8);page.addView(e,lp);return e;}
-    Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setAllCaps(false);b.setTextSize(15);b.setTypeface(null,1);b.setTextColor(Color.WHITE);b.setBackground(rounded(Color.rgb(27,81,134),15));b.setElevation(2);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,9,0,4);b.setPadding(18,17,18,17);page.addView(b,lp);b.setOnClickListener(v->action.run());return b;}
+    Button button(String text,Runnable action){Button b=new Button(this);b.setText(text);b.setAllCaps(false);b.setTextSize(14);b.setTypeface(null,1);b.setTextColor(Color.WHITE);b.setBackground(rounded(Color.rgb(27,81,134),15));b.setElevation(2);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,8,0,4);b.setPadding(18,15,18,15);page.addView(b,lp);b.setOnClickListener(v->action.run());return b;}
     void message(String s){new AlertDialog.Builder(this).setMessage(s).setPositiveButton("Tushunarli",null).show();}
     JSONObject json(Object... args)throws Exception{JSONObject j=new JSONObject();for(int i=0;i<args.length;i+=2)j.put(args[i].toString(),args[i+1]);return j;}
     JSONObject api(String path,JSONObject data)throws Exception{
@@ -108,13 +122,28 @@ public class MainActivity extends Activity {
     void home(){work(()->api("/classes",null),r->{
         if(role.equals("district")||"district".equals(r.optString("kind"))){districtHome(r);return;}
         JSONArray catalog=r.getJSONArray("reasons");reasons=new String[catalog.length()];for(int j=0;j<catalog.length();j++)reasons[j]=catalog.getString(j);school=r.getJSONObject("school");
-        screen("Maktab Hisobot");label(school.optString("name")+(school.optString("code").isEmpty()?"":"  •  "+school.optString("code")));label(role.equals("admin")?"Direktor o‘rinbosari":"Mening sinflarim");
-        if(role.equals("admin")){EditText day=input("Sana YYYY-MM-DD",LocalDate.now().toString());button("Kunlik jamlangan hisobot",()->summary(day.getText().toString()));
-            button("Oylik hisobot va taqvim",this::monthMenu);button("Maktab ma’lumotlari",this::settings);button("O‘qituvchilar va sinflar",this::manage);}
-        JSONArray classes=r.getJSONArray("classes");for(int i=0;i<classes.length();i++){JSONObject cl=classes.getJSONObject(i);int id=cl.getInt("id");String name=cl.getString("name");button(name,()->classMenu(id,name));}
-        button("Parolni almashtirish",this::password);
-        button("Chiqish",()->work(()->api("/logout",json()),x->{token="";login();}));
+        screen("Bosh sahifa");
+        LinearLayout hero=new LinearLayout(this);hero.setOrientation(LinearLayout.VERTICAL);hero.setPadding(19,18,19,18);hero.setBackground(rounded(Color.rgb(27,81,134),19));hero.setElevation(3);
+        TextView schoolName=new TextView(this);schoolName.setText(school.optString("name"));schoolName.setTextSize(19);schoolName.setTypeface(null,1);schoolName.setTextColor(Color.WHITE);hero.addView(schoolName);
+        TextView roleText=new TextView(this);roleText.setText((school.optString("code").isEmpty()?"":school.optString("code")+"  •  ")+(role.equals("admin")?"DIREKTOR O‘RINBOSARI":"SINF RAHBARI"));roleText.setTextSize(11);roleText.setLetterSpacing(.06f);roleText.setTextColor(Color.rgb(218,233,248));roleText.setPadding(0,6,0,0);hero.addView(roleText);LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.setMargins(0,0,0,8);page.addView(hero,hp);
+        if(role.equals("admin")){
+            adminHomeVisible=true;approvalNotice=new TextView(this);approvalNotice.setText("Tasdiqlash so‘rovlari tekshirilmoqda…");approvalNotice.setTextSize(14);approvalNotice.setTypeface(null,1);approvalNotice.setTextColor(Color.rgb(72,84,101));approvalNotice.setLineSpacing(2,1f);approvalNotice.setPadding(16,16,16,16);approvalNotice.setBackground(outline(Color.rgb(255,248,226),16,Color.rgb(247,221,159)));LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,-2);ap.setMargins(0,6,0,8);page.addView(approvalNotice,ap);approvalNotice.setOnClickListener(v->manage());refreshApprovals(true);scheduleApprovalPoll();
+            section("Boshqaruv");actionCard("Kunlik jamlanma","Sinf hisobotlari va yuborish holati","01",()->summary(LocalDate.now().toString()));
+            actionCard("Oylik hisobot","Taqvim va davomat natijalari","02",this::monthMenu);actionCard("Maktab sozlamalari","Maktab nomi va Telegram","03",this::settings);actionCard("Tasdiqlash va sinflar","Xodimlar, so‘rovlar va vakolat","04",this::manage);
+        }else{
+            section("Mening sinflarim");
+        }
+        JSONArray classes=r.getJSONArray("classes");if(classes.length()==0&&role.equals("teacher"))label("Sinfingiz hali o‘rinbosar tomonidan tasdiqlanmagan yoki biriktirilmagan.");
+        for(int i=0;i<classes.length();i++){JSONObject cl=classes.getJSONObject(i);int id=cl.getInt("id");String name=cl.getString("name");actionCard(name,"Davomat va o‘quvchilar ro‘yxati","↗",()->classMenu(id,name));}
+        section("Akkaunt");actionCard("Parolni almashtirish","Xavfsizlik sozlamalari","•",this::password);button("Chiqish",()->work(()->api("/logout",json()),x->{token="";login();}));
     });}
+    void refreshApprovals(boolean showError){
+        if(!adminHomeVisible||!role.equals("admin")||token.isEmpty())return;
+        pool.execute(()->{try{JSONObject r=api("/members",null);JSONArray members=r.getJSONArray("members");int count=0;for(int i=0;i<members.length();i++)if("pending".equals(members.getJSONObject(i).optString("status")))count++;final int pendingCount=count;
+            runOnUiThread(()->{if(!adminHomeVisible||approvalNotice==null)return;approvalNotice.setText(pendingCount==0?"✓  Yangi tasdiqlash so‘rovi yo‘q\nXodimlar ro‘yxati va vakolatlarni boshqarish uchun bosing":"!  "+pendingCount+" ta tasdiqlash so‘rovi bor\nKo‘rib chiqish uchun shu yerni bosing");approvalNotice.setTextColor(pendingCount==0?Color.rgb(41,105,76):Color.rgb(112,75,18));approvalNotice.setBackground(outline(pendingCount==0?Color.rgb(232,247,237):Color.rgb(255,248,226),16,pendingCount==0?Color.rgb(190,228,202):Color.rgb(247,221,159)));});
+        }catch(Exception e){if(showError)runOnUiThread(()->{if(adminHomeVisible&&approvalNotice!=null)approvalNotice.setText("Tasdiqlashlar olinmadi. Tekshirish uchun bosing.");});}});
+    }
+    void scheduleApprovalPoll(){approvalPoll=()->{if(!adminHomeVisible||!role.equals("admin"))return;refreshApprovals(false);approvalHandler.postDelayed(approvalPoll,30000);};approvalHandler.postDelayed(approvalPoll,30000);}
     void districtHome(JSONObject r)throws Exception{
         JSONObject district=r.optJSONObject("district");if(district==null)district=r.optJSONObject("school");
         screen("Tuman Hisobot");label(district.optString("name")+"  •  "+district.optString("code"));
@@ -220,10 +249,23 @@ public class MainActivity extends Activity {
             .setPositiveButton("Tushunarli",null).show();
     }
     void manage(){work(()->api("/members",null),r->{
-        screen("Foydalanuvchilarni boshqarish");JSONArray members=r.getJSONArray("members");if(members.length()==0)label("Hali kutilayotgan so‘rov yo‘q va sinf rahbarlari ro‘yxatdan o‘tmagan.");
-        for(int i=0;i<members.length();i++){JSONObject member=members.getJSONObject(i);String status=member.getString("status"),shown=member.optString("name"),memberRole=member.optString("role","teacher");String roleName=memberRole.equals("admin")?"Direktor o‘rinbosari so‘rovi":"Sinf rahbari";label((shown.isEmpty()?member.optString("email"):shown)+"\n"+member.optString("email")+"\n"+roleName+(member.optString("class_name").isEmpty()?"":" • "+member.optString("class_name"))+"\nHolat: "+(status.equals("active")?"Tasdiqlangan":"Tasdiq kutilmoqda"));int uid=member.getInt("id");if(status.equals("pending")){button(memberRole.equals("admin")?"O‘rinbosarlik vakolatini topshirish":"Sinf rahbarini tasdiqlash",()->{String warning=memberRole.equals("admin")?"Haqiqiy direktor o‘rinbosari ekanini tekshiring. Tasdiqlansa, sizning akkauntingiz oddiy foydalanuvchi bo‘ladi va direktor vakolati unga o‘tadi.":"Bu foydalanuvchini sinf rahbari sifatida tasdiqlaysizmi?";new AlertDialog.Builder(this).setTitle("So‘rovni tasdiqlash").setMessage(warning).setPositiveButton("Tasdiqlash",(a,b)->work(()->api("/members",json("user_id",uid,"approved",true)),x->{if(x.optBoolean("deputy_transferred")){role=x.optString("role","teacher");home();message("Direktor vakolati yangi akkauntga topshirildi. Endi shu Google akkauntidan foydalaniladi.");}else manage();})).setNegativeButton("Bekor",null).show();});button("Rad etish",()->new AlertDialog.Builder(this).setMessage("Bu so‘rov rad etilsinmi?").setPositiveButton("Rad etish",(a,b)->work(()->api("/members",json("user_id",uid,"approved",false)),x->manage())).setNegativeButton("Bekor",null).show());}}
-        button("Ro‘yxatni yangilash",this::manage);button("Orqaga",this::home);
+        screen("Xodimlar va vakolatlar");JSONArray members=r.getJSONArray("members");int pending=r.optInt("pending_count",0);
+        label("Kutilayotgan so‘rovlar: "+pending+". Sinf rahbarini tasdiqlashingiz yoki direktor vakolatini unga topshirishingiz mumkin.");
+        if(members.length()==0)label("Hozircha sinf rahbarlari yoki kutilayotgan so‘rovlar yo‘q.");
+        for(int i=0;i<members.length();i++){
+            JSONObject member=members.getJSONObject(i);String status=member.optString("status"),shown=member.optString("name"),mail=member.optString("email"),memberRole=member.optString("role","teacher"),className=member.optString("class_name");int uid=member.getInt("id");
+            String roleName=memberRole.equals("admin")?"Direktor o‘rinbosari vakolati so‘rovi":"Sinf rahbari";String detail=(mail.isEmpty()?roleName:mail)+ (className.isEmpty()?"":"  •  "+className)+"\n"+(status.equals("active")?"Tasdiqlangan":"Tasdiqlash kutilmoqda");
+            actionCard(shown.isEmpty()?mail:shown,detail,status.equals("pending")?"!":"✓",()->message(detail));
+            if(status.equals("pending")){
+                if(memberRole.equals("admin"))button("O‘rinbosarlik vakolatini topshirish",()->confirmTransfer(uid,shown));
+                else{button("Sinf rahbari sifatida tasdiqlash",()->confirmApproval(uid));button("Tasdiqlash va o‘rinbosar qilish",()->confirmTransfer(uid,shown));}
+                button("So‘rovni rad etish",()->new AlertDialog.Builder(this).setTitle("So‘rovni rad etish").setMessage((shown.isEmpty()?mail:shown)+" akkauntining so‘rovi rad etilsinmi?").setPositiveButton("Rad etish",(a,b)->work(()->api("/members",json("user_id",uid,"approved",false)),x->manage())).setNegativeButton("Bekor",null).show());
+            }else if(memberRole.equals("teacher"))button("O‘rinbosarlik vakolatini topshirish",()->confirmTransfer(uid,shown));
+        }
+        button("Ro‘yxatni yangilash",this::manage);button("Bosh sahifa",this::home);
     });}
+    void confirmApproval(int uid){new AlertDialog.Builder(this).setTitle("Sinf rahbarini tasdiqlash").setMessage("Ushbu akkaunt sinf rahbari sifatida tasdiqlanadi. Direktor vakolati sizda qoladi.").setPositiveButton("Tasdiqlash",(a,b)->work(()->api("/members",json("user_id",uid,"approved",true)),x->manage())).setNegativeButton("Bekor",null).show();}
+    void confirmTransfer(int uid,String name){String who=name==null||name.isEmpty()?"tanlangan foydalanuvchi":name;new AlertDialog.Builder(this).setTitle("Direktor vakolatini topshirish").setMessage(who+" akkauntiga direktor o‘rinbosari vakolati beriladi. Sizning akkauntingiz sinf rahbari roliga o‘tadi. Shu amalni bajarasizmi?").setPositiveButton("Vakolatni topshirish",(a,b)->work(()->api("/members",json("user_id",uid,"action","transfer_deputy")),x->{role=x.optString("role","teacher");home();message("Direktor vakolati topshirildi. Yangi o‘rinbosar Google orqali qayta kiradi.");})).setNegativeButton("Bekor",null).show();}
     void password(){
         screen("Parolni almashtirish");EditText old=input("Joriy parol","");old.setInputType(129);EditText fresh=input("Yangi parol — kamida 10 belgi","");fresh.setInputType(129);
         button("Saqlash",()->{try{JSONObject data=json("current",old.getText().toString(),"password",fresh.getText().toString());work(()->api("/password",data),r->{token="";login();message("Parol yangilandi. Qayta kiring.");});}catch(Exception e){message(e.getMessage());}});button("Orqaga",this::home);
