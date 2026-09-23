@@ -61,12 +61,22 @@ class Tests(unittest.TestCase):
         self.assertEqual([x['name'] for x in district['schools']],['Xo‘jayli IM'])
         self.assertEqual(district['schools'][0]['classes'][0]['name'],'9-A')
 
-    def test_second_deputy_is_not_allowed(self):
+    def test_second_deputy_request_can_transfer_role(self):
         profile={'sub':'second-admin','email':'second@example.com','name':'Second'}
         with patch.object(s,'verify_google_id_token',return_value=profile):
-            with self.assertRaises(s.ApiError) as error:
-                s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'admin'})
-        self.assertEqual(error.exception.status,409)
+            request=s.dispatch('POST','/onboarding',{'id_token':'x','district_id':self.did,'school_id':self.sid,'role':'admin'})
+        self.assertTrue(request['pending']);self.assertEqual(request['role'],'admin')
+        members=s.dispatch('GET','/members',{},self.tokens[1])['members']
+        candidate=next(row for row in members if row['email']=='second@example.com')
+        self.assertEqual(candidate['role'],'admin')
+        result=s.dispatch('POST','/members',{'user_id':candidate['id'],'approved':True},self.tokens[1])
+        self.assertTrue(result['deputy_transferred']);self.assertEqual(result['role'],'teacher')
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT role FROM users WHERE id=1').fetchone()[0],'teacher')
+            self.assertEqual(c.execute("SELECT role FROM users WHERE google_sub='second-admin'").fetchone()[0],'admin')
+        with patch.object(s,'verify_google_id_token',return_value=profile):
+            auth=s.dispatch('POST','/auth/google',{'id_token':'x'})
+        self.assertEqual(auth['role'],'admin')
 
     def test_rejected_teacher_can_apply_again(self):
         profile={'sub':'retry-teacher','email':'retry@example.com','name':'Retry'}

@@ -432,8 +432,9 @@ def google_onboarding(c,data):
     desired=data.get('role','teacher')
     if desired not in ('admin','teacher'):raise ApiError('Lavozimni tanlang')
     first=not c.execute("SELECT 1 FROM users WHERE school_id=? AND role='admin' AND status='active'",(school['id'],)).fetchone()
-    if not first and desired=='admin':raise ApiError('Bu maktabda direktor o‘rinbosari mavjud. Sinf rahbari lavozimini tanlang',409)
-    role='admin' if first else 'teacher';status='active' if first else 'pending'
+    # The first school account becomes deputy automatically. Later deputy
+    # candidates can request the role and must be approved by the current deputy.
+    role='admin' if first or desired=='admin' else 'teacher';status='active' if first else 'pending'
     c.execute('INSERT INTO users(district_id,school_id,login,password,role,name,google_sub,email,status) VALUES(?,?,?,NULL,?,?,?,?,?)',(district['id'],school['id'],profile['email'],role,profile['name'],profile['sub'],profile['email'],status))
     uid=c.execute('SELECT id FROM users WHERE google_sub=?',(profile['sub'],)).fetchone()[0]
     class_name=(data.get('class_name') or '').strip()
@@ -637,14 +638,20 @@ def dispatch(method,path,data,token=''):
         if u['role']!='admin':raise ApiError('Faqat direktor o‘rinbosari uchun',403)
         if route=='/members':
             if method=='POST':
-                member=c.execute("SELECT id FROM users WHERE id=? AND school_id=? AND role='teacher'",(data.get('user_id'),sid)).fetchone()
+                member=c.execute("SELECT id,role,status FROM users WHERE id=? AND school_id=? AND role IN ('teacher','admin')",(data.get('user_id'),sid)).fetchone()
                 if not member:raise ApiError('Sinf rahbari topilmadi',404)
                 approved=data.get('approved')
                 if type(approved)!=bool:raise ApiError('Tasdiqlash holati kerak')
+                if member['status']!='pending':raise ApiError('Bu so‘rov avval ko‘rib chiqilgan',409)
+                if approved and member['role']=='admin':
+                    c.execute("UPDATE users SET role='teacher' WHERE id=? AND school_id=? AND role='admin' AND status='active'",(u['id'],sid))
+                    c.execute("UPDATE users SET status='active' WHERE id=? AND school_id=?",(member['id'],sid))
+                    c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
+                    return {'ok':True,'role':'teacher','deputy_transferred':True,'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,u.role,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role IN ('teacher','admin') AND (u.status='pending' OR u.role='teacher') ORDER BY u.status,u.name",(sid,))]}
                 c.execute("UPDATE users SET status=? WHERE id=? AND school_id=?",('active' if approved else 'rejected',member['id'],sid))
                 if not approved:c.execute('UPDATE classes SET teacher=NULL WHERE teacher=?',(member['id'],))
                 c.execute('DELETE FROM sessions WHERE user_id=?',(member['id'],))
-            return {'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role='teacher' ORDER BY u.status,u.name",(sid,))]}
+            return {'members':[dict(r) for r in c.execute("SELECT u.id,u.name,u.email,u.status,u.role,cl.name AS class_name FROM users u LEFT JOIN classes cl ON cl.teacher=u.id WHERE u.school_id=? AND u.role IN ('teacher','admin') AND (u.status='pending' OR u.role='teacher') ORDER BY u.status,u.name",(sid,))]}
         if route=='/settings':
             if method=='POST':
                 name=text_value(data,'name',150);director=text_value(data,'director',150);executor=text_value(data,'executor',150)
