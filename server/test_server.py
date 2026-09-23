@@ -47,6 +47,19 @@ class Tests(unittest.TestCase):
         catalog=s.dispatch('GET','/catalog',{})
         self.assertEqual(catalog['districts'][0]['schools'][0]['id'],self.sid)
         self.assertEqual(len(catalog['districts'][0]['schools'][0]['classes']),2)
+        names={d['name'] for d in catalog['districts']}
+        self.assertTrue({'Amudaryo tumani','Xo‘jayli tumani','Bo‘zatov tumani','Nukus shahri'}<=names)
+
+    def test_school_aliases_are_deduplicated_in_catalog(self):
+        with s.connect() as c:
+            did=c.execute("SELECT id FROM districts WHERE code='XOJ'").fetchone()[0]
+            for code,name in [('XOJ-A','Xo\'jayli IM'),('XOJ-B','Xoʻjayli IM'),('XOJ-C','Xo‘jayli tumani ixtisoslashtirilgan maktabi')]:
+                c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?)',(did,code,name))
+            active=c.execute("SELECT id FROM schools WHERE code='XOJ-B'").fetchone()[0]
+            c.execute("INSERT INTO classes(school_id,name) VALUES(?,'9-A')",(active,))
+        district=next(d for d in s.dispatch('GET','/catalog',{})['districts'] if d['code']=='XOJ')
+        self.assertEqual([x['name'] for x in district['schools']],['Xo‘jayli IM'])
+        self.assertEqual(district['schools'][0]['classes'][0]['name'],'9-A')
 
     def test_second_deputy_is_not_allowed(self):
         profile={'sub':'second-admin','email':'second@example.com','name':'Second'}
@@ -235,10 +248,10 @@ class Tests(unittest.TestCase):
     def test_districts_do_not_mix(self):
         pw=s.password_hash('secret-pass')
         with s.connect() as c:
+            c.execute("DELETE FROM districts WHERE code='XOJ'")
             c.execute("UPDATE districts SET code='XOJ',name='Xo‘jayli tumani' WHERE id=?",(self.did,))
             c.execute("UPDATE schools SET code='XOJ-09',name='9-maktab' WHERE id=?",(self.sid,))
             c.execute("INSERT INTO users(district_id,school_id,login,password,role,name) VALUES(?,?,?,?,'district',?)",(self.did,None,'tuman',pw,'Tuman xodimi'))
-            c.execute("INSERT INTO districts(code,name) VALUES('NUK','Nukus tumani')")
             other=c.execute("SELECT id FROM districts WHERE code='NUK'").fetchone()[0]
             c.execute("INSERT INTO users(district_id,school_id,login,password,role,name) VALUES(?,?,?,?,'district',?)",(other,None,'tuman',pw,'Boshqa tuman'))
             c.execute("INSERT INTO schools(district_id,code,name) VALUES(?,'NUK-01','1-maktab')",(other,))

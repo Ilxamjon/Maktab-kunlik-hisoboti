@@ -51,7 +51,7 @@ def application(environ,start_response):
         if not isinstance(data,dict):raise server.ApiError('JSON obyekt kerak')
         if path=='/login':login_key=_login_key(environ,data);_check_login_limit(login_key)
         query=environ.get('QUERY_STRING','');token=environ.get('HTTP_AUTHORIZATION','').removeprefix('Bearer ')
-        if path=='/health':result={'status':'ok','version':'1.0','database':'postgres' if database.is_postgres() else 'sqlite'}
+        if path=='/health':result={'status':'ok','version':'1.1','database':'postgres' if database.is_postgres() else 'sqlite'}
         elif path=='/cron/noon':
             expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
             if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)

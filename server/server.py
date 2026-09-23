@@ -12,6 +12,13 @@ ROOT=Path(__file__).parent
 LOG=logging.getLogger('maktab-hisobot.worker')
 DB=os.getenv('DATABASE_PATH', str(ROOT/'school.db'))
 TZ=timezone(timedelta(hours=5))
+KARAKALPAKSTAN_DISTRICTS=(
+    ('AMU','Amudaryo tumani'),('BER','Beruniy tumani'),('BOZ','Bo‘zatov tumani'),
+    ('CHM','Chimboy tumani'),('ELK','Ellikqal’a tumani'),('KEG','Kegeyli tumani'),
+    ('QON','Qonliko‘l tumani'),('QOR','Qorao‘zak tumani'),('QNG','Qo‘ng‘irot tumani'),
+    ('MOY','Mo‘ynoq tumani'),('NUK','Nukus tumani'),('SHU','Shumanay tumani'),
+    ('TAX','Taxiatosh tumani'),('TAK','Taxtako‘pir tumani'),('TOR','To‘rtko‘l tumani'),
+    ('XOJ','Xo‘jayli tumani'),('NUKS','Nukus shahri'))
 def now_uz():
     return datetime.now(TZ)
 def today():
@@ -221,6 +228,50 @@ def migrate_v6(c):
     if 'telegram_link_created' not in cols:c.execute('ALTER TABLE schools ADD COLUMN telegram_link_created REAL NOT NULL DEFAULT 0')
     c.execute('PRAGMA user_version=6')
 
+def normalized_name(value):
+    value=(value or '').lower().translate(str.maketrans({'ʻ':"'",'ʼ':"'",'‘':"'",'’':"'",'`':"'"}))
+    return re.sub(r'[^a-z0-9а-яёўқғҳ]+','',value)
+
+def school_identity(value):
+    key=normalized_name(value)
+    if key in ('xojayliim','xojaylitumaniixtisoslashtirilganmaktabi'):return 'xojayliim'
+    return key
+
+def seed_karakalpakstan(c):
+    """Keep the public onboarding catalog complete without replacing existing IDs."""
+    existing={normalized_name(r['name']):r for r in c.execute('SELECT id,code,name FROM districts')}
+    for code,name in KARAKALPAKSTAN_DISTRICTS:
+        found=existing.get(normalized_name(name))
+        if found:
+            if found['name']!=name:c.execute('UPDATE districts SET name=? WHERE id=?',(name,found['id']))
+            continue
+        # Preserve a previously configured Xo'jayli row even when its apostrophe differs.
+        c.execute('INSERT INTO districts(code,name) VALUES(?,?) ON CONFLICT(code) DO NOTHING',(code,name))
+
+def cleanup_empty_school_aliases(c):
+    """Delete only duplicate aliases that contain no user or operational data."""
+    for d in c.execute('SELECT id FROM districts'):
+        groups={}
+        for school in c.execute('SELECT id,name FROM schools WHERE district_id=?',(d['id'],)):
+            groups.setdefault(school_identity(school['name']),[]).append(school)
+        for rows in groups.values():
+            if len(rows)<2:continue
+            scored=[]
+            for school in rows:
+                activity=c.execute('SELECT count(*) FROM users WHERE school_id=?',(school['id'],)).fetchone()[0]+c.execute('SELECT count(*) FROM classes WHERE school_id=?',(school['id'],)).fetchone()[0]
+                scored.append((activity,school['id']))
+            keep=max(scored)[1]
+            for activity,school_id in scored:
+                if school_id!=keep and activity==0:
+                    c.execute('DELETE FROM schools WHERE id=?',(school_id,))
+
+def migrate_v7(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=7:return
+    seed_karakalpakstan(c)
+    cleanup_empty_school_aliases(c)
+    c.execute('PRAGMA user_version=7')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -232,6 +283,8 @@ def init():
             if not c.execute('SELECT 1 FROM schools LIMIT 1').fetchone():
                 did=c.execute('SELECT id FROM districts ORDER BY id LIMIT 1').fetchone()[0]
                 c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?)',(did,(os.getenv('SCHOOL_CODE') or 'MAKTAB').upper(),os.getenv('SCHOOL_NAME') or 'Maktab'))
+            seed_karakalpakstan(c)
+            cleanup_empty_school_aliases(c)
         return
     with connect() as c:
         c.executescript('''
@@ -243,7 +296,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -330,10 +383,20 @@ def new_session(c,user_id):
 
 def public_catalog(c):
     result=[]
-    for d in c.execute('SELECT id,code,name FROM districts ORDER BY name'):
+    districts=list(c.execute('SELECT id,code,name FROM districts'))
+    districts.sort(key=lambda d:(not bool(c.execute('SELECT 1 FROM schools WHERE district_id=? LIMIT 1',(d['id'],)).fetchone()),d['name']))
+    for d in districts:
         schools=[]
-        for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY name',(d['id'],)):
-            item=dict(s);item['classes']=[dict(cl) for cl in c.execute('SELECT id,name FROM classes WHERE school_id=? ORDER BY name',(s['id'],))];schools.append(item)
+        grouped={}
+        for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY id',(d['id'],)):
+            identity=school_identity(s['name'])
+            activity=c.execute('SELECT count(*) FROM users WHERE school_id=?',(s['id'],)).fetchone()[0]+c.execute('SELECT count(*) FROM classes WHERE school_id=?',(s['id'],)).fetchone()[0]
+            current=grouped.get(identity)
+            if current is None or activity>current[0]:grouped[identity]=(activity,s)
+        for _,s in sorted(grouped.values(),key=lambda pair:pair[1]['name']):
+            item=dict(s)
+            if school_identity(s['name'])=='xojayliim':item['name']='Xo‘jayli IM'
+            item['classes']=[dict(cl) for cl in c.execute('SELECT id,name FROM classes WHERE school_id=? ORDER BY name',(s['id'],))];schools.append(item)
         result.append({'id':d['id'],'code':d['code'],'name':d['name'],'schools':schools})
     return {'districts':result}
 
@@ -350,6 +413,9 @@ def google_onboarding(c,data):
     district=c.execute('SELECT * FROM districts WHERE id=?',(district_id,)).fetchone() if district_id else None
     if not district:
         if not district_name:raise ApiError('Tumanni tanlang yoki nomini kiriting')
+        wanted=normalized_name(district_name)
+        district=next((r for r in c.execute('SELECT * FROM districts') if normalized_name(r['name'])==wanted),None)
+    if not district:
         code='D'+hashlib.sha256(district_name.lower().encode()).hexdigest()[:10].upper()
         c.execute('INSERT INTO districts(code,name) VALUES(?,?) ON CONFLICT(code) DO NOTHING',(code,district_name[:150]))
         district=c.execute('SELECT * FROM districts WHERE code=?',(code,)).fetchone()
@@ -357,6 +423,9 @@ def google_onboarding(c,data):
     school=c.execute('SELECT * FROM schools WHERE id=? AND district_id=?',(school_id,district['id'])).fetchone() if school_id else None
     if not school:
         if not school_name:raise ApiError('Maktabni tanlang yoki nomini kiriting')
+        wanted=school_identity(school_name)
+        school=next((r for r in c.execute('SELECT * FROM schools WHERE district_id=?',(district['id'],)) if school_identity(r['name'])==wanted),None)
+    if not school:
         code=district['code']+'-'+hashlib.sha256(school_name.lower().encode()).hexdigest()[:6].upper()
         c.execute('INSERT INTO schools(district_id,code,name) VALUES(?,?,?) ON CONFLICT(code) DO NOTHING',(district['id'],code,school_name[:150]))
         school=c.execute('SELECT * FROM schools WHERE code=?',(code,)).fetchone()
