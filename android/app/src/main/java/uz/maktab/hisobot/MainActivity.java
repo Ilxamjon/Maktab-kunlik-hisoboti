@@ -18,13 +18,14 @@ import java.util.concurrent.*;
 import android.os.CancellationSignal;
 import androidx.credentials.*;
 import androidx.credentials.exceptions.GetCredentialException;
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption;
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 
 /** Native Android pilot; backend URL must use HTTPS. Tokens only in memory. */
 public class MainActivity extends Activity {
     static final String DEFAULT_SERVER="https://maktab-hisobot-api.onrender.com";
     LinearLayout page; String base="", token="", role="", loginName="";
+    boolean googleSignInRunning=false;
     final ExecutorService pool=Executors.newSingleThreadExecutor();
     String[] reasons={"Kelgan"};
     JSONObject school=new JSONObject(); String pdfPath=""; Runnable draftSaver=null;
@@ -71,12 +72,15 @@ public class MainActivity extends Activity {
         label("Google akkauntingiz bilan kiring. Alohida login va parol kerak emas.");button("Google bilan kirish",this::googleSignIn);
     }
     void googleSignIn(){
+        if(googleSignInRunning)return;
         String client=getString(R.string.google_web_client_id);if(client.startsWith("GOOGLE_")){message("Google Client ID hali sozlanmagan");return;}
-        GetGoogleIdOption option=new GetGoogleIdOption.Builder().setFilterByAuthorizedAccounts(false).setServerClientId(client).setAutoSelectEnabled(false).build();
+        googleSignInRunning=true;
+        Toast.makeText(this,"Google akkauntlar oynasi ochilmoqda…",Toast.LENGTH_SHORT).show();
+        GetSignInWithGoogleOption option=new GetSignInWithGoogleOption.Builder(client).build();
         GetCredentialRequest request=new GetCredentialRequest.Builder().addCredentialOption(option).build();
         CredentialManager.create(this).getCredentialAsync(this,request,new CancellationSignal(),pool,new CredentialManagerCallback<GetCredentialResponse,GetCredentialException>(){
-            public void onResult(GetCredentialResponse response){try{Credential credential=response.getCredential();if(!GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType()))throw new Exception("Google token olinmadi");String idToken=GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();runOnUiThread(()->googleLogin(idToken));}catch(Exception e){runOnUiThread(()->message(e.getMessage()));}}
-            public void onError(GetCredentialException e){runOnUiThread(()->message("Google orqali kirish bekor qilindi"));}
+            public void onResult(GetCredentialResponse response){googleSignInRunning=false;try{Credential credential=response.getCredential();if(!GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType()))throw new Exception("Google token olinmadi");String idToken=GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();runOnUiThread(()->googleLogin(idToken));}catch(Exception e){runOnUiThread(()->message(e.getMessage()==null?"Google tokenini o‘qib bo‘lmadi":e.getMessage()));}}
+            public void onError(GetCredentialException e){googleSignInRunning=false;runOnUiThread(()->{String detail=e.getMessage();if(detail==null||detail.trim().isEmpty())detail=e.getClass().getSimpleName();message("Google orqali kirib bo‘lmadi.\n\n"+detail+"\n\nInternet, Google Play Services va Android OAuth sozlamasini tekshiring.");});}
         });
     }
     void googleLogin(String idToken){work(()->api("/auth/google",json("id_token",idToken)),r->{if(r.optBoolean("onboarding")){onboarding(idToken);return;}if(r.optBoolean("pending")){pending();return;}token=r.getString("token");role=r.getString("role");loginName=r.optString("name");home();});}
