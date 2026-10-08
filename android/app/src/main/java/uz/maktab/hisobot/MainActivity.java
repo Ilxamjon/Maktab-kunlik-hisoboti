@@ -18,14 +18,20 @@ import java.util.concurrent.*;
 import android.os.CancellationSignal;
 import androidx.credentials.*;
 import androidx.credentials.exceptions.GetCredentialException;
+import androidx.credentials.exceptions.GetCredentialCancellationException;
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
+import com.google.android.gms.auth.api.signin.GoogleSignIn;
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount;
+import com.google.android.gms.auth.api.signin.GoogleSignInClient;
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions;
+import com.google.android.gms.common.api.ApiException;
 
 /** Native Android pilot; backend URL must use HTTPS. Tokens only in memory. */
 public class MainActivity extends Activity {
     static final String DEFAULT_SERVER="https://maktab-hisobot-api.onrender.com";
     LinearLayout page; String base="", token="", role="", loginName="";
-    boolean googleSignInRunning=false;
+    boolean googleSignInRunning=false; GoogleSignInClient googleClient;
     final ExecutorService pool=Executors.newSingleThreadExecutor();
     String[] reasons={"Kelgan"};
     JSONObject school=new JSONObject(); String pdfPath=""; Runnable draftSaver=null;
@@ -33,7 +39,13 @@ public class MainActivity extends Activity {
     TextView approvalNotice; boolean adminHomeVisible=false;
     interface Task { JSONObject run() throws Exception; }
     interface Done { void run(JSONObject result) throws Exception; }
-    @Override public void onCreate(Bundle b){super.onCreate(b); getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); login();}
+    @Override public void onCreate(Bundle b){super.onCreate(b); if(takeGoogleToken(getIntent()))return; login();}
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);takeGoogleToken(intent);}
+    boolean takeGoogleToken(Intent intent){
+        Uri data=intent==null?null:intent.getData();if(data==null||!"maktabhisobot".equals(data.getScheme()))return false;
+        String idToken=data.getQueryParameter("id_token");if(idToken==null||idToken.isEmpty())return false;
+        base=DEFAULT_SERVER;screen("Kirilmoqda…");label("Google akkaunt tekshirilmoqda.");googleLogin(idToken);return true;
+    }
     void screen(String title){
         draftSaver=null;adminHomeVisible=false;approvalHandler.removeCallbacksAndMessages(null);approvalNotice=null;
         getWindow().setStatusBarColor(Color.rgb(21,63,108));getWindow().setNavigationBarColor(Color.rgb(244,247,251));
@@ -91,16 +103,10 @@ public class MainActivity extends Activity {
         label("Google akkauntingiz bilan kiring. Alohida login va parol kerak emas.");button("Google bilan kirish",this::googleSignIn);
     }
     void googleSignIn(){
-        if(googleSignInRunning)return;
-        String client=getString(R.string.google_web_client_id);if(client.startsWith("GOOGLE_")){message("Google Client ID hali sozlanmagan");return;}
-        googleSignInRunning=true;
-        Toast.makeText(this,"Google akkauntlar oynasi ochilmoqda…",Toast.LENGTH_SHORT).show();
-        GetSignInWithGoogleOption option=new GetSignInWithGoogleOption.Builder(client).build();
-        GetCredentialRequest request=new GetCredentialRequest.Builder().addCredentialOption(option).build();
-        CredentialManager.create(this).getCredentialAsync(this,request,new CancellationSignal(),pool,new CredentialManagerCallback<GetCredentialResponse,GetCredentialException>(){
-            public void onResult(GetCredentialResponse response){googleSignInRunning=false;try{Credential credential=response.getCredential();if(!GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(credential.getType()))throw new Exception("Google token olinmadi");String idToken=GoogleIdTokenCredential.createFrom(credential.getData()).getIdToken();runOnUiThread(()->googleLogin(idToken));}catch(Exception e){runOnUiThread(()->message(e.getMessage()==null?"Google tokenini o‘qib bo‘lmadi":e.getMessage()));}}
-            public void onError(GetCredentialException e){googleSignInRunning=false;runOnUiThread(()->{String detail=e.getMessage();if(detail==null||detail.trim().isEmpty())detail=e.getClass().getSimpleName();message("Google orqali kirib bo‘lmadi.\n\n"+detail+"\n\nInternet, Google Play Services va Android OAuth sozlamasini tekshiring.");});}
-        });
+        base=DEFAULT_SERVER;
+        Toast.makeText(this,"Google akkaunt oynasi brauzerda ochiladi…",Toast.LENGTH_SHORT).show();
+        try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(base+"/auth/google/start")));}
+        catch(Exception e){message("Brauzerni ochib bo‘lmadi. Chrome o‘rnatilganini tekshiring.");}
     }
     void googleLogin(String idToken){work(()->api("/auth/google",json("id_token",idToken)),r->{if(r.optBoolean("onboarding")){onboarding(idToken);return;}if(r.optBoolean("pending")){pending();return;}token=r.getString("token");role=r.getString("role");loginName=r.optString("name");home();});}
     void onboarding(String idToken){work(()->api("/catalog",null),catalog->{
@@ -299,7 +305,18 @@ public class MainActivity extends Activity {
         pdfPath=path;Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);intent.setType("application/pdf");intent.putExtra(Intent.EXTRA_TITLE,filename);startActivityForResult(intent,40);
     }
     @Override protected void onActivityResult(int req,int result,Intent data){
-        super.onActivityResult(req,result,data);if(req!=40||result!=RESULT_OK||data==null)return;Uri uri=data.getData();String path=pdfPath;
+        super.onActivityResult(req,result,data);
+        if(req==41){
+            googleSignInRunning=false;
+            if(result!=RESULT_OK||data==null)return;
+            try{
+                GoogleSignInAccount acc=GoogleSignIn.getSignedInAccountFromIntent(data).getResult(ApiException.class);
+                String idToken=acc.getIdToken();if(idToken==null||idToken.isEmpty()){message("Google token olinmadi. Play Services yangilang.");return;}
+                googleLogin(idToken);
+            }catch(ApiException e){if(e.getStatusCode()!=12501)message("Google orqali kirib bo‘lmadi. Play Services va internetni tekshiring.");}catch(Exception e){message(e.getMessage()==null?"Google orqali kirib bo‘lmadi":e.getMessage());}
+            return;
+        }
+        if(req!=40||result!=RESULT_OK||data==null)return;Uri uri=data.getData();String path=pdfPath;
         work(()->{URL url=new URL(base+path);checkUrl(url);HttpURLConnection c=(HttpURLConnection)url.openConnection();c.setConnectTimeout(12000);c.setReadTimeout(30000);c.setInstanceFollowRedirects(false);c.setRequestProperty("Authorization","Bearer "+token);
             try{if(c.getResponseCode()!=200)throw new IOException("PDFni olish imkoni bo‘lmadi. Qayta kiring.");try(InputStream in=c.getInputStream();OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null)throw new IOException("Fayl ochilmadi");byte[] buffer=new byte[8192];int n;while((n=in.read(buffer))!=-1)out.write(buffer,0,n);}}finally{c.disconnect();}return new JSONObject();},r->message("PDF saqlandi. Uni ochib chop etishingiz mumkin."));
     }

@@ -63,7 +63,12 @@ def application(environ,start_response):
             result={'ok':True,'queued':queued,'processed':processed}
         else:result=server.dispatch(method,path+('?' +query if query else ''),data,token)
         if login_key:_clear_login_failures(login_key)
-        if isinstance(result,bytes):raw=result;ctype='application/pdf'
+        if isinstance(result,server.HtmlPage):
+            if result.location:
+                headers=[('Location',result.location),('Content-Length','0'),('Cache-Control','no-store')]
+                start_response('302 Found',headers);return [b'']
+            raw=result.body;ctype='text/html; charset=utf-8'
+        elif isinstance(result,bytes):raw=result;ctype='application/pdf'
         else:raw=json.dumps(result,ensure_ascii=False).encode()
     except server.ApiError as e:
         if login_key and e.status==401:_record_login_failure(login_key)

@@ -43,6 +43,12 @@ class Tests(unittest.TestCase):
         with patch.object(s,'verify_google_id_token',return_value=profiles[1]):
             login=s.dispatch('POST','/auth/google',{'id_token':'b'})
         self.assertEqual(login['role'],'teacher');self.assertTrue(login['token'])
+    def test_google_browser_oauth_start(self):
+        with patch.dict(os.environ,{'GOOGLE_CLIENT_ID':'18401771000-test.apps.googleusercontent.com','PUBLIC_URL':'https://maktab-hisobot-api.onrender.com'}):
+            page=s.dispatch('GET','/auth/google/start',{})
+        self.assertIsInstance(page,s.HtmlPage);self.assertIn('accounts.google.com',page.location);self.assertIn('auth%2Fgoogle%2Fbridge',page.location)
+        bridge=s.dispatch('GET','/auth/google/bridge',{})
+        self.assertIsInstance(bridge,s.HtmlPage);self.assertIn(b'maktabhisobot://google',bridge.body)
     def test_public_catalog(self):
         catalog=s.dispatch('GET','/catalog',{})
         self.assertEqual(catalog['districts'][0]['schools'][0]['id'],self.sid)

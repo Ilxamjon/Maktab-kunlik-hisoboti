@@ -26,6 +26,11 @@ def today():
 class ApiError(Exception):
     def __init__(self, message, status=400): self.message,self.status=message,status
 
+class HtmlPage:
+    def __init__(self,body='',location=None):
+        self.body=body.encode('utf-8') if isinstance(body,str) else body
+        self.location=location
+
 @contextmanager
 def connect():
     if database.is_postgres():c=database.postgres_connect()
@@ -375,6 +380,40 @@ def verify_google_id_token(id_token):
     if profile.get('aud')!=client_id or profile.get('email_verified') not in ('true',True):raise ApiError('Google akkaunt tasdiqlanmadi',401)
     return {'sub':text_value(profile,'sub',255),'email':text_value(profile,'email',255),'name':(profile.get('name') or profile.get('email') or '')[:150]}
 
+def public_origin():
+    return (os.getenv('PUBLIC_URL') or 'https://maktab-hisobot-api.onrender.com').rstrip('/')
+
+def google_oauth_start():
+    client_id=os.getenv('GOOGLE_CLIENT_ID','').strip()
+    if not client_id:
+        return HtmlPage('<!doctype html><meta charset="utf-8"><p>Google kirish serverda sozlanmagan.</p>')
+    redirect=public_origin()+'/auth/google/bridge'
+    url='https://accounts.google.com/o/oauth2/v2/auth?'+urlencode({
+        'client_id':client_id,
+        'redirect_uri':redirect,
+        'response_type':'id_token',
+        'response_mode':'fragment',
+        'scope':'openid email profile',
+        'nonce':secrets.token_urlsafe(16),
+        'prompt':'select_account',
+    })
+    return HtmlPage('',location=url)
+
+def google_oauth_bridge():
+    return HtmlPage('''<!doctype html><meta charset="utf-8"><title>Maktab Hisobot</title>
+<p>Ilovaga qaytilyapti…</p>
+<script>
+(function(){
+  var p=new URLSearchParams(location.hash.replace(/^#/,""));
+  var token=p.get("id_token");
+  var err=p.get("error")||p.get("error_description");
+  if(!token){document.body.textContent=err||"Google orqali kirish bekor qilindi.";return;}
+  var q="id_token="+encodeURIComponent(token);
+  location.replace("maktabhisobot://google?"+q);
+  setTimeout(function(){location.replace("intent://google?"+q+"#Intent;scheme=maktabhisobot;package=uz.maktab.hisobot;end");},500);
+})();
+</script>''')
+
 def new_session(c,user_id):
     raw=secrets.token_urlsafe(32)
     c.execute('DELETE FROM sessions WHERE expires<?',(time.time(),))
@@ -544,6 +583,8 @@ def dispatch_district(c,u,method,route,query,data,token=''):
 
 def dispatch(method,path,data,token=''):
     split=urlsplit(path);route=split.path;query=parse_qs(split.query)
+    if route=='/auth/google/start' and method=='GET':return google_oauth_start()
+    if route=='/auth/google/bridge' and method=='GET':return google_oauth_bridge()
     with connect() as c:
         if route=='/catalog' and method=='GET':return public_catalog(c)
         if route=='/auth/google' and method=='POST':
@@ -826,8 +867,13 @@ class Handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(length)) if length else {}
             if not isinstance(data,dict):raise ApiError('JSON obyekt kerak')
             result=dispatch(method,self.path,data,self.headers.get('Authorization','').removeprefix('Bearer '))
-            raw=result if isinstance(result,bytes) else json.dumps(result,ensure_ascii=False).encode();status=200
-            content='application/pdf' if isinstance(result,bytes) else 'application/json; charset=utf-8'
+            if isinstance(result,HtmlPage):
+                if result.location:
+                    self.send_response(302);self.send_header('Location',result.location);self.send_header('Content-Length','0');self.send_header('Cache-Control','no-store');self.end_headers();return
+                raw=result.body;status=200;content='text/html; charset=utf-8'
+            else:
+                raw=result if isinstance(result,bytes) else json.dumps(result,ensure_ascii=False).encode();status=200
+                content='application/pdf' if isinstance(result,bytes) else 'application/json; charset=utf-8'
         except ApiError as e:raw=json.dumps({'error':e.message},ensure_ascii=False).encode();status=e.status;content='application/json'
         except database.INTEGRITY_ERRORS:raw=json.dumps({'error':'Bu login yoki sinf allaqachon mavjud'},ensure_ascii=False).encode();status=409;content='application/json'
         except (ValueError,TypeError):raw=b'{"error":"Bad request"}';status=400;content='application/json'
