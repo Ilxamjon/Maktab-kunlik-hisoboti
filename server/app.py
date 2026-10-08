@@ -46,15 +46,19 @@ def application(environ,start_response):
     code=200;ctype='application/json; charset=utf-8'
     login_key=None
     try:
-        method=environ.get('REQUEST_METHOD','GET');path=environ.get('PATH_INFO','/')
+        method=environ.get('REQUEST_METHOD','GET');path=(environ.get('PATH_INFO','/') or '/').rstrip('/') or '/'
         if method not in ('GET','POST'):raise server.ApiError('GET yoki POST kerak',405)
+        if method=='GET' and path=='/auth/google/start':result=server.google_oauth_start()
+        elif method=='GET' and path=='/auth/google/bridge':result=server.google_oauth_bridge()
+        else:result=None
         length=int(environ.get('CONTENT_LENGTH') or 0)
         if length<0 or length>1_000_000:raise server.ApiError('So‘rov hajmi katta',413)
         data=json.loads(environ['wsgi.input'].read(length)) if length else {}
         if not isinstance(data,dict):raise server.ApiError('JSON obyekt kerak')
         if path=='/login':login_key=_login_key(environ,data);_check_login_limit(login_key)
         query=environ.get('QUERY_STRING','');token=environ.get('HTTP_AUTHORIZATION','').removeprefix('Bearer ')
-        if path=='/health':result={'status':'ok','version':'1.3','database':'postgres' if database.is_postgres() else 'sqlite'}
+        if result is not None:pass
+        elif path=='/health':result={'status':'ok','version':'1.5','database':'postgres' if database.is_postgres() else 'sqlite'}
         elif path=='/cron/noon':
             expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
             if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)
