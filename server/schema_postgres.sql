@@ -37,3 +37,9 @@ CREATE TABLE IF NOT EXISTS digests(school_id BIGINT NOT NULL,day TEXT NOT NULL,k
 CREATE INDEX IF NOT EXISTS reports_school_day ON reports(school_id,day);
 CREATE INDEX IF NOT EXISTS classes_school ON classes(school_id);
 CREATE INDEX IF NOT EXISTS schools_district ON schools(district_id);
+ALTER TABLE schools ADD COLUMN IF NOT EXISTS join_code TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS schools_join_code ON schools(join_code) WHERE join_code<>'';
+CREATE TABLE IF NOT EXISTS bot_chats(
+ telegram_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT '', draft TEXT NOT NULL DEFAULT '{}',
+ user_id BIGINT, updated DOUBLE PRECISION NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS bot_updates(update_id BIGINT PRIMARY KEY, created DOUBLE PRECISION NOT NULL);

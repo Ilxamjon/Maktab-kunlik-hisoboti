@@ -11,6 +11,14 @@ _LIMITS={};_LOCK=threading.Lock()
 # Waitress imports this module instead of running its __main__ block. Run the
 # idempotent schema/catalog migration here so every production deploy is ready.
 server.init()
+import bot
+
+def _boot_telegram():
+    """Register the webhook only on Render, where TELEGRAM_SET_WEBHOOK=1."""
+    if os.getenv('TELEGRAM_SET_WEBHOOK')!='1' or not os.getenv('TELEGRAM_BOT_TOKEN','').strip():return
+    try:bot.ensure_webhook()
+    except Exception:LOG.exception('Telegram webhook ulanmadi')
+_boot_telegram()
 
 def _client_ip(environ):
     """Trust nginx's real IP only when Waitress is reached through loopback."""
@@ -58,7 +66,10 @@ def application(environ,start_response):
         if path=='/login':login_key=_login_key(environ,data);_check_login_limit(login_key)
         query=environ.get('QUERY_STRING','');token=environ.get('HTTP_AUTHORIZATION','').removeprefix('Bearer ')
         if result is not None:pass
-        elif path=='/health':result={'status':'ok','version':'1.5','database':'postgres' if database.is_postgres() else 'sqlite'}
+        elif method=='POST' and path=='/telegram/webhook':
+            if not bot.accept_webhook(environ.get('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN','')):raise server.ApiError('Ruxsat yo‘q',403)
+            bot.process(data);result={'ok':True}
+        elif path=='/health':result={'status':'ok','version':'1.6','database':'postgres' if database.is_postgres() else 'sqlite'}
         elif path=='/cron/noon':
             expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
             if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)

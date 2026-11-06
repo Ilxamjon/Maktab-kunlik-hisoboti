@@ -33,8 +33,8 @@ def main():
             raise SystemExit('Bu login tuman ichida band')
         c.execute("INSERT INTO users(district_id,school_id,login,password,role,name) VALUES(?,?,?,?,'district',?)",
                   (did,None,login,server.password_hash(pw),name))
-    print('Tayyor. Ilovada tuman kodi:',code)
-    print('Tuman xodimi maktablarni ilovadan qo‘shadi. Har maktab o‘z kodi va o‘z Telegramiga ega.')
+    print('Tayyor. Tuman kodi:',code)
+    print('Maktab Telegram botda ochiladi. Har maktabning PDFi faqat o‘z direktor o‘rinbosariga boradi.')
     print('Keyin 1-maktabni setup_school.py orqali ham qo‘shish mumkin.')
 
 if __name__=='__main__':main()

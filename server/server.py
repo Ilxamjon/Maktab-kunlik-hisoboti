@@ -277,6 +277,20 @@ def migrate_v7(c):
     cleanup_empty_school_aliases(c)
     c.execute('PRAGMA user_version=7')
 
+def migrate_v8(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=8:return
+    if 'join_code' not in _columns(c,'schools'):c.execute("ALTER TABLE schools ADD COLUMN join_code TEXT NOT NULL DEFAULT ''")
+    c.execute('''CREATE TABLE IF NOT EXISTS bot_chats(
+        telegram_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT '',
+        draft TEXT NOT NULL DEFAULT '{}',
+        user_id INTEGER,
+        updated REAL NOT NULL DEFAULT 0)''')
+    c.execute('CREATE TABLE IF NOT EXISTS bot_updates(update_id INTEGER PRIMARY KEY, created REAL NOT NULL)')
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS schools_join_code ON schools(join_code) WHERE join_code<>''")
+    c.execute('PRAGMA user_version=8')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -301,7 +315,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c);migrate_v8(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -425,6 +439,7 @@ def public_catalog(c):
     districts=list(c.execute('SELECT id,code,name FROM districts'))
     districts.sort(key=lambda d:(not bool(c.execute('SELECT 1 FROM schools WHERE district_id=? LIMIT 1',(d['id'],)).fetchone()),d['name']))
     for d in districts:
+        if d['code']=='TG':continue
         schools=[]
         grouped={}
         for s in c.execute('SELECT id,code,name FROM schools WHERE district_id=? ORDER BY id',(d['id'],)):

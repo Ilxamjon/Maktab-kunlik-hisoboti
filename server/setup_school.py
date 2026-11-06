@@ -42,7 +42,7 @@ def main():
             sid=c.execute('SELECT id FROM schools WHERE code=?',(code,)).fetchone()[0]
         c.execute("INSERT INTO users(district_id,school_id,login,password,role,name) VALUES(?,?,?,?,'admin',?)",
                   (did,sid,login,server.password_hash(pw),school['executor']))
-    print('Tayyor. Ilovada maktab kodi:',code)
-    print('O‘qituvchi va sinflarni direktor o‘rinbosari ilovadan yaratadi. Kunlik PDF soat 12:00 da shu maktab Telegramiga ketadi.')
+    print('Tayyor. Maktab kodi:',code)
+    print('Sinf rahbarlari Telegram bot orqali ro‘yxatdan o‘tadi. Kunlik PDF shu maktab direktor o‘rinbosariga boradi.')
 
 if __name__=='__main__':main()
