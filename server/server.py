@@ -515,6 +515,7 @@ def summary(c,day,school_id):
     return result
 
 from reports import make_pdf
+from excel_report import make_summary_xlsx, XLSX
 
 def enqueue(c,day,require_complete,school_id,kind='manual'):
     rows=summary(c,day,school_id)
@@ -522,7 +523,7 @@ def enqueue(c,day,require_complete,school_id,kind='manual'):
     info=school_settings(c,school_id)
     key=hashlib.sha256(json.dumps([kind,school_id,day,rows,info],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     c.execute("UPDATE outbox SET state='superseded' WHERE school_id=? AND day=? AND kind=? AND state='pending' AND fingerprint<>?",(school_id,day,kind,key))
-    c.execute('INSERT OR IGNORE INTO outbox(school_id,day,kind,fingerprint,pdf) VALUES(?,?,?,?,?)',(school_id,day,kind,key,make_pdf(rows,day,info)))
+    c.execute('INSERT OR IGNORE INTO outbox(school_id,day,kind,fingerprint,pdf) VALUES(?,?,?,?,?)',(school_id,day,kind,key,make_summary_xlsx(rows,day,info)))
 
 def code_taken(c,code,ignore_school=None,ignore_district=None):
     school=c.execute('SELECT id FROM schools WHERE code=?',(code,)).fetchone()
@@ -807,15 +808,16 @@ def dispatch(method,path,data,token=''):
             enqueue(c,day,False,sid,'manual');return {'ok':True,'message':'Navbatga qo‘yildi. Yetkazilish holatini tekshiring.'}
         raise ApiError('Manzil topilmadi',404)
 
-def send_document(blob,day,token=None,chat=None,caption=None,filename=None):
+def send_document(blob,day,token=None,chat=None,caption=None,filename=None,content_type=None):
     token=token or os.getenv('TELEGRAM_BOT_TOKEN');chat=chat or os.getenv('TELEGRAM_CHAT_ID')
     if not token or not chat:raise RuntimeError('Telegram sozlanmagan')
     caption=caption or (day+' | Jamlangan maktab hisoboti')
     filename=filename or ('Hisobot-'+day+'.pdf')
+    content_type=content_type or 'application/pdf'
     boundary=secrets.token_hex(16);chunks=[]
     for name,value in [('chat_id',str(chat)),('caption',caption)]:
         chunks.append(('--'+boundary+'\r\nContent-Disposition: form-data; name="'+name+'"\r\n\r\n'+value+'\r\n').encode())
-    chunks.extend([('--'+boundary+'\r\nContent-Disposition: form-data; name="document"; filename="'+filename+'"\r\nContent-Type: application/pdf\r\n\r\n').encode(),blob,('\r\n--'+boundary+'--\r\n').encode()])
+    chunks.extend([('--'+boundary+'\r\nContent-Disposition: form-data; name="document"; filename="'+filename+'"\r\nContent-Type: '+content_type+'\r\n\r\n').encode(),blob,('\r\n--'+boundary+'--\r\n').encode()])
     req=Request('https://api.telegram.org/bot'+token+'/sendDocument',data=b''.join(chunks),headers={'Content-Type':'multipart/form-data; boundary='+boundary})
     with urlopen(req,timeout=40) as response:result=json.load(response)
     if not result.get('ok'):raise RuntimeError('Telegram faylni qabul qilmadi')
@@ -851,9 +853,10 @@ def process_one():
     if not token or not chat:
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+300,row['id']))
         return False
-    caption=school['name']+' | '+row['day']+' | Kunlik hisobot' if row['kind']!='monthly' else school['name']+' | '+row['day']+' | Oylik hisobot'
-    filename='Hisobot-'+school['code']+'-'+row['day']+'.pdf'
-    try:send_document(row['pdf'],row['day'],token,chat,caption,filename)
+    monthly=row['kind']=='monthly'
+    caption=school['name']+' | '+row['day']+(' | Oylik hisobot' if monthly else ' | Kunlik jadval')
+    filename=('Hisobot-' if monthly else 'Davomat-')+school['code']+'-'+row['day']+('.pdf' if monthly else '.xlsx')
+    try:send_document(row['pdf'],row['day'],token,chat,caption,filename,None if monthly else XLSX)
     except Exception:
         LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))

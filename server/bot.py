@@ -2,7 +2,8 @@
 import hashlib, hmac, json, logging, os, re, secrets, time
 from urllib.request import Request, urlopen
 import database, server
-from catalog import REASONS
+from catalog import REASONS, EXCEL_LABELS
+from excel_report import make_summary_xlsx, XLSX
 
 LOG=logging.getLogger('maktab-hisobot.bot')
 DEPUTY='Direktor o‘rinbosari'
@@ -10,7 +11,7 @@ TEACHER='Sinf rahbari'
 ADD='O‘quvchi qo‘shish'
 LIST='O‘quvchilar'
 ATT='Bugungi davomat'
-PDF_BTN='Bugungi PDF'
+PDF_BTN='Bugungi jadval'
 STATUS='Sinflar holati'
 CODE_BTN='Maktab kodi'
 CANCEL='Bekor qilish'
@@ -100,7 +101,7 @@ def deliver(messages):
         try:
             if item.get('pdf') is not None:
                 if not item.get('chat_id'):raise RuntimeError('Direktor o‘rinbosari chati yo‘q')
-                server.send_document(item['pdf'],item.get('day') or '',chat=item['chat_id'],caption=item.get('text') or '',filename=item.get('filename'))
+                server.send_document(item['pdf'],item.get('day') or '',chat=item['chat_id'],caption=item.get('text') or '',filename=item.get('filename'),content_type=item.get('content_type'))
             elif item.get('method')=='answerCallbackQuery':
                 payload={'callback_query_id':item['id']}
                 if item.get('toast'):payload['text']=item['toast'][:180]
@@ -112,7 +113,7 @@ def deliver(messages):
         except Exception:
             LOG.exception('Telegram xabar yuborilmadi')
             if item.get('pdf') is not None and item.get('notify_chat'):
-                try:api('sendMessage',{'chat_id':item['notify_chat'],'text':'Davomat saqlandi, lekin PDF hozir yuborilmadi. Direktor o‘rinbosari «Bugungi PDF» tugmasini bosing.'})
+                try:api('sendMessage',{'chat_id':item['notify_chat'],'text':'Davomat saqlandi, lekin jadval hozir yuborilmadi. Direktor o‘rinbosari «Bugungi jadval» tugmasini bosing.'})
                 except Exception:LOG.exception('PDF xatosi haqida xabar yuborilmadi')
 
 def process(update):
@@ -205,7 +206,7 @@ def _home(c,tg,chat,out,profile):
         _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}",TEACHER_KB)
 
 def _deputy_text(profile):
-    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. Har bir jo‘natilgan davomat jamlanib sizga PDF bo‘lib keladi."
+    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. Har bir jo‘natilgan davomat 1-jadvalga jamlanib sizga Excel fayl bo‘lib keladi."
 
 def _on_text(c,row,chat,tg,text,out):
     profile=_profile(c,row)
@@ -430,7 +431,7 @@ def _attendance_message(out,chat,profile,pupils,marks):
     for index,pupil in enumerate(pupils,1):
         status=int(marks.get(str(pupil['id']),0) or 0)
         if status not in range(len(REASONS)):status=0
-        label=REASONS[status]
+        label=EXCEL_LABELS[status]
         lines.append(f"{index}. {pupil['name']} — {label}")
         buttons.append([{'text':('✗ ' if status else '✓ ')+pupil['name'][:40],'callback_data':'who:'+str(pupil['id'])}])
     buttons.append([{'text':'Davomatni jo‘natish','callback_data':'go'}])
@@ -460,7 +461,7 @@ def _on_callback(c,row,chat,tg,data,out):
         pupil=next((item for item in pupils if str(item['id'])==sid),None)
         if not pupil:
             out[0]['toast']='O‘quvchi topilmadi';return
-        rows=[[{'text':REASONS[index][:40],'callback_data':f'why:{sid}:{index}'}] for index in range(len(REASONS))]
+        rows=[[{'text':EXCEL_LABELS[index][:40],'callback_data':f'why:{sid}:{index}'}] for index in range(len(REASONS))]
         out.append({'chat_id':chat,'text':pupil['name']+'\nSababini tanlang.','reply_markup':{'inline_keyboard':rows}})
         return
     if data.startswith('why:'):
@@ -471,7 +472,7 @@ def _on_callback(c,row,chat,tg,data,out):
         marks[parts[1]]=status
         draft['marks']=marks
         _touch(c,tg,'att',draft,profile['id'])
-        out[0]['toast']=REASONS[status][:180]
+        out[0]['toast']=EXCEL_LABELS[status][:180]
         _attendance_message(out,chat,profile,pupils,marks);return
     if data=='go':
         _submit(c,tg,chat,profile,pupils,marks,out);return
@@ -522,10 +523,10 @@ def _send_compiled(c,out,profile,notify_chat,caption):
     if not rows:
         _say(out,notify_chat,'Hali sinf rahbari ro‘yxatdan o‘tmagan.');return
     day=server.today().isoformat()
-    blob=server.make_pdf(rows,day,server.school_settings(c,profile['school_id']))
+    blob=make_summary_xlsx(rows,day,server.school_settings(c,profile['school_id']))
     submitted=sum(1 for row in rows if row['submitted'])
-    text=caption+' | jamlanma '+str(submitted)+'/'+str(len(rows))+' sinf'
-    out.append({'pdf':blob,'chat_id':school['telegram_chat_id'],'notify_chat':notify_chat,'text':text[:1000],'day':day,'filename':'Davomat-'+school['code']+'-'+day+'.pdf'})
+    text=caption+' | 1-jadval '+str(submitted)+'/'+str(len(rows))+' sinf'
+    out.append({'pdf':blob,'content_type':XLSX,'chat_id':school['telegram_chat_id'],'notify_chat':notify_chat,'text':text[:1000],'day':day,'filename':'Davomat-'+school['code']+'-'+day+'.xlsx'})
 
 def poll():
     server.init()

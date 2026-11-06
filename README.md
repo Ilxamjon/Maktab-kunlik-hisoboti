@@ -8,7 +8,7 @@ Direktor o‘rinbosari botni ochib, ism, familiya va maktab nomini yozadi. Bot 6
 
 Sinf rahbari shu kodni yozadi, ism, familiya va sinfini kiritadi (masalan `7B`). Keyin o‘z sinfining o‘quvchilar ro‘yxatini tuzadi.
 
-Har kuni botda davomat yuboradi. Kelmagan o‘quvchining sababi tanlanadi. Jo‘natilgan davomat shu maktab bo‘yicha jamlanib, faqat o‘sha direktor o‘rinbosariga PDF bo‘lib boradi. Boshqa maktabga tushmaydi.
+Har kuni botda davomat yuboradi. Kelmagan o‘quvchining sababi maktab jadvalidagi ustunlardan tanlanadi. Jo‘natilgan davomat shu maktabning 1-jadvaliga jamlanib, faqat o‘sha direktor o‘rinbosariga bitta Excel fayl bo‘lib boradi. Boshqa maktabga tushmaydi.
 
 ## Ishga tushirish
 

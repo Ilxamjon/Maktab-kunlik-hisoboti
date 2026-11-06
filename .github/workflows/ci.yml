@@ -41,4 +41,4 @@ jobs:
         run: python -m unittest -v
 
       - name: Check Python syntax
-        run: python -m py_compile app.py bot.py catalog.py connect_telegram.py reports.py server.py setup_school.py setup_tuman.py
+        run: python -m py_compile app.py bot.py catalog.py connect_telegram.py excel_report.py reports.py server.py setup_school.py setup_tuman.py

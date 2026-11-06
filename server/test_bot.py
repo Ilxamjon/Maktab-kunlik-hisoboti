@@ -1,7 +1,7 @@
 import io, json, os, re, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
-from pypdf import PdfReader
+from openpyxl import load_workbook
 import server as s
 import bot
 
@@ -53,16 +53,21 @@ class BotTests(unittest.TestCase):
         self.tap(22,'who:'+str(student))
         self.tap(22,'why:'+str(student)+':1')
         sent=self.tap(22,'go')
-        pdf=next(item for item in sent if item.get('pdf') is not None)
-        self.assertEqual(str(pdf['chat_id']),'11')
-        self.assertNotEqual(str(pdf['chat_id']),'22')
-        self.assertNotEqual(str(pdf['chat_id']),'33')
-        self.assertTrue(pdf['pdf'].startswith(b'%PDF'))
-        text=' '.join(page.extract_text() or '' for page in PdfReader(io.BytesIO(pdf['pdf'])).pages)
-        self.assertIn('Birinchi',text)
-        self.assertIn('Jasur',text)
-        self.assertIn('Kasalligi',text)
-        self.assertNotIn('Ikkinchi',text)
+        sheet_file=next(item for item in sent if item.get('pdf') is not None)
+        self.assertEqual(str(sheet_file['chat_id']),'11')
+        self.assertNotEqual(str(sheet_file['chat_id']),'22')
+        self.assertNotEqual(str(sheet_file['chat_id']),'33')
+        self.assertTrue(sheet_file['filename'].endswith('.xlsx'))
+        sheet=load_workbook(io.BytesIO(sheet_file['pdf'])).active
+        self.assertEqual(sheet['B7'].value,'Birinchi maktab')
+        self.assertEqual(sheet['C7'].value,1)
+        self.assertEqual(sheet['E7'].value,1)
+        self.assertEqual(sheet['F7'].value,1)
+        self.assertEqual(sheet['G4'].value,'Kasalligi tufayli')
+        self.assertEqual(sheet['G7'].value,1)
+        values=' '.join(str(cell.value) for row in sheet.iter_rows() for cell in row if cell.value is not None)
+        self.assertNotIn('Ikkinchi',values)
+        self.assertNotIn('Jasur',values)
         with s.connect() as c:
             payload=json.loads(c.execute('SELECT payload FROM reports').fetchone()['payload'])
         self.assertEqual(payload[0]['status'],1)

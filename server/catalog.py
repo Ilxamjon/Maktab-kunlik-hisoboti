@@ -22,3 +22,24 @@ REASONS = [
 EXCUSED = (1, 3, 2, 6, 5)
 UNEXCUSED = (7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 4, 17)
 COLUMN_ORDER = EXCUSED + UNEXCUSED
+# Same indexes as REASONS. Wording follows the school Excel columns.
+EXCEL_LABELS = [
+    'Kelgan',
+    'Kasalligi tufayli',
+    'Oilaviy tadbirlar uchun ruxsat olgan',
+    'Tadbirlarda (tanlov, musobaqa) ishtiroki',
+    'Sababsiz dars qoldiradi',
+    'Boshqa sabablarga ko‘ra',
+    'Ijtimoiy ahvoli og‘irligi',
+    'Surunkali dars qoldirayotgan',
+    'Qidiruvda bo‘lgan oila farzandi',
+    'Chet elga ruxsatsiz chiqib ketgan',
+    'Ta’limdan bo‘yin tovlagan',
+    'Darsga kelmasdan ishlab yurgan',
+    'Ta’lim olishga ota-onasi qarshi',
+    'Jazoni o‘tash muassasasida yoki tergovda',
+    'Diniy libosda bo‘lgan',
+    'Ota-ona nazoratsizligi',
+    'Oilaviy sharoitiga ko‘ra',
+    'Turmushga chiqqanligi tufayli',
+]
