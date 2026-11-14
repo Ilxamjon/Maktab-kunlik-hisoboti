@@ -1,5 +1,5 @@
 import io, json, os, re, tempfile, unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
@@ -40,6 +40,9 @@ class BotTests(unittest.TestCase):
         self.send(tg,name)
         self.tap(tg,'g:M')
         self.send(tg,bot.SKIP)
+    def photo(self,tg):
+        self.n+=1
+        return bot.handle_update({'update_id':self.n,'message':{'message_id':self.n,'from':{'id':tg},'chat':{'id':tg,'type':'private'},'photo':[{'file_id':'receipt-'+str(tg),'file_unique_id':'u'}]}})
 
     def test_attendance_pdf_goes_only_to_that_deputy(self):
         code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
@@ -288,3 +291,44 @@ class BotTests(unittest.TestCase):
         self.assertEqual(book.sheetnames,['Surunkali'])
         self.assertEqual(book.active['B4'].value,'Karimov Jasur')
         self.assertEqual(book.active['D4'].value,4)
+
+    def test_subscription_is_hidden_and_stops_without_payment(self):
+        with patch.dict(os.environ,{'PAYMENT_NAME':'Test Egası','PAYMENT_CARD':'8600 0000 0000 0000','ADMIN_CHAT_IDS':'99'}):
+            code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+            self.teacher(22,code,'Dilnoza','Karimova','7b')
+            self.add_student(22,'Karimov Jasur')
+            home=self.send(11,'/start')
+            labels=[button['text'] for row in home[-1]['reply_markup']['keyboard'] for button in row]
+            self.assertNotIn(bot.ADMIN_BTN,labels)
+            self.assertNotIn('Maktablar:',self.send(11,bot.ADMIN_BTN)[-1]['text'])
+            panel=self.send(99,bot.ADMIN_BTN)
+            self.assertIn('Birinchi maktab',panel[-1]['text'])
+            today=s.today()
+            with s.connect() as c:
+                school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
+                c.execute('UPDATE schools SET created_on=?,paid_until=?,sub_warned=? WHERE id=?',((today-timedelta(days=3)).isoformat(),'','',school))
+            moment=datetime.combine(today,datetime.min.time()).replace(hour=9,minute=30,tzinfo=s.TZ)
+            with patch.object(s,'send_message') as send:
+                self.assertEqual(s.maybe_subscription_warnings(moment),1)
+            text=send.call_args.args[1]
+            self.assertIn('Oylik obuna tugashiga 3 kun qoldi',text)
+            self.assertIn('100 000 so‘m',text)
+            self.assertIn('Test Egası',text)
+            self.assertIn('8600 0000 0000 0000',text)
+            self.assertEqual(send.call_args.args[0],'11')
+            with s.connect() as c:
+                c.execute('UPDATE schools SET created_on=? WHERE id=?',((today-timedelta(days=10)).isoformat(),school))
+            self.assertIn('ishlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('ishlamaydi',self.send(11,bot.PDF_BTN)[-1]['text'])
+            shot=self.photo(11)
+            self.assertTrue(any('qabul qilindi' in item.get('text','') for item in shot))
+            notice=next(item for item in shot if item.get('photo'))
+            self.assertEqual(str(notice['chat_id']),'99')
+            self.assertIn('Birinchi maktab',notice['text'])
+            self.assertIn('Valiyev Ali',notice['text'])
+            payment=notice['reply_markup']['inline_keyboard'][0][0]['callback_data']
+            self.assertEqual(self.tap(33,payment)[0].get('toast'),'Ruxsat yo‘q')
+            self.assertIn('ishlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            approved=self.tap(99,payment)
+            self.assertTrue(any('Tasdiqlandi' in item.get('text','') for item in approved))
+            self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])

@@ -21,12 +21,13 @@ STAFF='Sinf rahbarlari'
 DAYS='Dam olish'
 DEPUTY2='Ikkinchi o‘rinbosar'
 CODE_BTN='Maktab kodi'
+ADMIN_BTN='Admin'
 CANCEL='Bekor qilish'
 DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,ADMIN_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
     text=(value or '').strip().lower()
@@ -48,6 +49,10 @@ ROLE_KB=keyboard([DEPUTY],[TEACHER],[DEPUTY2])
 TEACHER_KB=keyboard([ADD],[LIST,ATT],[ROSTER_BTN])
 DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN])
 CANCEL_KB=keyboard([CANCEL])
+
+def _deputy_kb(c,chat):
+    if not server.is_platform_admin(c,chat):return DEPUTY_KB
+    return keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN],[ADMIN_BTN])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
 
@@ -109,6 +114,10 @@ def deliver(messages):
             if item.get('pdf') is not None:
                 if not item.get('chat_id'):raise RuntimeError('Direktor o‘rinbosari chati yo‘q')
                 server.send_document(item['pdf'],item.get('day') or '',chat=item['chat_id'],caption=item.get('text') or '',filename=item.get('filename'),content_type=item.get('content_type'))
+            elif item.get('photo'):
+                payload={'chat_id':item['chat_id'],'photo':item['photo'],'caption':(item.get('text') or '')[:1024]}
+                if item.get('reply_markup'):payload['reply_markup']=item['reply_markup']
+                api('sendPhoto',payload)
             elif item.get('method')=='answerCallbackQuery':
                 payload={'callback_query_id':item['id']}
                 if item.get('toast'):payload['text']=item['toast'][:180]
@@ -137,10 +146,12 @@ def _handle(c,update):
         if c.execute('SELECT 1 FROM bot_updates WHERE update_id=?',(uid,)).fetchone():return []
         if int(uid)%100==0:c.execute('DELETE FROM bot_updates WHERE created<?',(time.time()-7*86400,))
         c.execute('INSERT INTO bot_updates(update_id,created) VALUES(?,?)',(int(uid),time.time()))
-    chat,user,text,callback,document=_parts(update)
+    chat,user,text,callback,document,photo=_parts(update)
     if not chat or chat.get('type')!='private' or not user or not user.get('id'):return []
     tg=str(user['id']);chat_id=chat['id'];out=[]
     row=_ensure(c,tg)
+    if photo:
+        _on_photo(c,row,chat_id,tg,photo,out);return out
     if document:
         _on_document(c,row,chat_id,tg,document,out);return out
     if callback is not None:
@@ -157,9 +168,11 @@ def _handle(c,update):
 def _parts(update):
     if 'callback_query' in update:
         cq=update['callback_query'];msg=cq.get('message') or {}
-        return msg.get('chat') or {},cq.get('from') or {},None,cq,None
+        return msg.get('chat') or {},cq.get('from') or {},None,cq,None,None
     msg=update.get('message') or {}
-    return msg.get('chat') or {},msg.get('from') or {},msg.get('text'),None,msg.get('document')
+    photos=msg.get('photo') or []
+    photo=photos[-1] if isinstance(photos,list) and photos else None
+    return msg.get('chat') or {},msg.get('from') or {},msg.get('text'),None,msg.get('document'),photo
 
 def fetch_file(file_id):
     info=api('getFile',{'file_id':file_id}) or {}
@@ -174,6 +187,11 @@ def fetch_file(file_id):
 def _on_document(c,row,chat,tg,document,out):
     profile=_profile(c,row)
     name=(document.get('file_name') or '').lower()
+    mime=(document.get('mime_type') or '').lower()
+    if name.endswith(('.jpg','.jpeg','.png','.webp')) or mime.startswith('image/'):
+        _save_receipt(c,chat,profile,document.get('file_id') or '',out);return
+    if profile and not server.school_access(c,profile['school_id'])['open']:
+        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
     if not name.endswith('.xlsx'):
         _say(out,chat,'Faqat .xlsx fayl yuboring. Ustunlar: F.I.SH, Jinsi, Yashash manzili.');return
     if not profile or profile['role']!='teacher' or not profile.get('class_id'):
@@ -252,8 +270,13 @@ def _home(c,tg,chat,out,profile):
         return
     if profile['role']=='admin':_bind_deputy_chat(c,profile,chat)
     _touch(c,tg,'',{},profile['id'])
+    access=server.school_access(c,profile['school_id'])
+    if not access['open']:
+        markup=keyboard([ADMIN_BTN]) if server.is_platform_admin(c,tg) else None
+        _say(out,chat,server.payment_text(access),markup)
+        return
     if profile['role']=='admin':
-        _say(out,chat,_deputy_text(profile),DEPUTY_KB)
+        _say(out,chat,_deputy_text(profile),_deputy_kb(c,chat))
     else:
         count=c.execute('SELECT count(*) FROM students WHERE class_id=? AND active=1',(profile['class_id'],)).fetchone()[0]
         _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\n«O‘quvchilar»dan ism, jins va manzilni tahrirlaysiz. Ro‘yxatni .xlsx fayl qilib ham yuborishingiz mumkin.",TEACHER_KB)
@@ -261,17 +284,109 @@ def _home(c,tg,chat,out,profile):
 def _deputy_text(profile):
     return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi."
 
+def _owner_command(c,tg,chat,text,out):
+    cmd=command_name(text)
+    if server.is_platform_admin(c,tg) and (same(text,ADMIN_BTN) or cmd=='/admin' and ' ' not in text.strip()):
+        _admin_panel(c,chat,out);return True
+    if cmd=='/admin' and ' ' in text.strip():
+        if server.admin_code_ok(text.strip().split(' ',1)[1]):
+            server.bind_platform_admin(c,tg)
+            _admin_panel(c,chat,out);return True
+    return False
+
+def _admin_panel(c,chat,out):
+    lines=['Maktablar:']
+    buttons=[]
+    schools=list(c.execute('SELECT id,name FROM schools ORDER BY id'))
+    if not schools:lines.append('Hali maktab yo‘q.')
+    for school in schools:
+        access=server.school_access(c,school['id'])
+        if access['open']:
+            lines.append(f"{school['name']} — {access['until'].strftime('%d.%m.%Y')} gacha, {access['days_left']} kun")
+        else:
+            lines.append(f"{school['name']} — to‘lov yo‘q, bot yopiq")
+    pending=list(c.execute("SELECT id,school_name,deputy_name FROM payments WHERE status='pending' ORDER BY id"))
+    if pending:
+        lines.extend(['','Kvitansiyalar:'])
+        for item in pending:
+            lines.append(f"#{item['id']} {item['school_name']} — {item['deputy_name']}")
+            buttons.append([{'text':f"#{item['id']} {item['school_name'][:28]}",'callback_data':'paysee:'+str(item['id'])}])
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons} if buttons else _deputy_kb(c,chat))
+
+def _on_photo(c,row,chat,tg,photo,out):
+    _save_receipt(c,chat,_profile(c,row),str((photo or {}).get('file_id') or ''),out)
+
+def _save_receipt(c,chat,profile,file_id,out):
+    if not profile or profile['role']!='admin':
+        _say(out,chat,'Kvitansiyani direktor o‘rinbosari yuboradi.');return
+    access=server.school_access(c,profile['school_id'])
+    if access['open'] and access['days_left']>3:
+        _say(out,chat,'Obuna hali tugamagan. Kvitansiya kerak emas.',_deputy_kb(c,chat));return
+    if not file_id:
+        _say(out,chat,'Rasm kelmadi. Qayta yuboring.');return
+    c.execute("UPDATE payments SET status='replaced' WHERE school_id=? AND status='pending'",(profile['school_id'],))
+    c.execute('INSERT INTO payments(school_id,chat_id,deputy_name,school_name,file_id,status,created) VALUES(?,?,?,?,?,?,?)',(profile['school_id'],str(chat),profile['name'],profile['school_name'],file_id,'pending',time.time()))
+    payment_id=c.execute('SELECT id FROM payments WHERE school_id=? AND file_id=? ORDER BY id DESC',(profile['school_id'],file_id)).fetchone()['id']
+    _say(out,chat,'Kvitansiya qabul qilindi. Tasdiqlangach keyingi oy ochiladi.',_deputy_kb(c,chat))
+    _notify_receipt(c,out,payment_id)
+
+def _receipt_caption(row):
+    return f"Kvitansiya #{row['id']}\nMaktab: {row['school_name']}\nYubordi: {row['deputy_name']}\nSumma: 100 000 so‘m"
+
+def _receipt_buttons(payment_id):
+    return {'inline_keyboard':[[{'text':'Tasdiqlash','callback_data':'payok:'+str(payment_id)},{'text':'Rad etish','callback_data':'payno:'+str(payment_id)}]]}
+
+def _notify_receipt(c,out,payment_id):
+    row=c.execute('SELECT * FROM payments WHERE id=?',(payment_id,)).fetchone()
+    if not row:return
+    caption=_receipt_caption(row)
+    buttons=_receipt_buttons(payment_id)
+    admins=server.platform_admin_ids(c)
+    if not admins:
+        return
+    for admin in admins:
+        out.append({'chat_id':admin,'photo':row['file_id'],'text':caption,'reply_markup':buttons})
+
+def _payment_callback(c,chat,tg,data,out):
+    if not server.is_platform_admin(c,tg):
+        out[0]['toast']='Ruxsat yo‘q';return
+    kind,raw=data.split(':',1)
+    if not raw.isdigit():
+        out[0]['toast']='Topilmadi';return
+    row=c.execute('SELECT * FROM payments WHERE id=?',(int(raw),)).fetchone()
+    if not row:
+        out[0]['toast']='Topilmadi';return
+    if kind=='paysee':
+        out.append({'chat_id':chat,'photo':row['file_id'],'text':_receipt_caption(row),'reply_markup':_receipt_buttons(row['id'])});return
+    if row['status']!='pending':
+        out[0]['toast']='Allaqachon ko‘rilgan';return
+    if kind=='payok':
+        until=server.extend_subscription(c,row['school_id'])
+        c.execute("UPDATE payments SET status='approved' WHERE id=?",(row['id'],))
+        out[0]['toast']='Tasdiqlandi'
+        _say(out,chat,f"Tasdiqlandi.\n{row['school_name']}\n{row['deputy_name']}\n{until.strftime('%d.%m.%Y')} gacha ochiq.")
+        _say(out,row['chat_id'],f"To‘lov tasdiqlandi. Bot {until.strftime('%d.%m.%Y')} gacha ishlaydi.",_deputy_kb(c,row['chat_id']))
+        return
+    c.execute("UPDATE payments SET status='rejected' WHERE id=?",(row['id'],))
+    out[0]['toast']='Rad etildi'
+    _say(out,row['chat_id'],'Kvitansiya rad etildi. To‘lov rasmini qayta yuboring.')
+
 def _on_text(c,row,chat,tg,text,out):
     profile=_profile(c,row)
     cmd=command_name(text)
     if cmd in ('/start','/menu','/help'):
         _home(c,tg,chat,out,profile);return
+    if cmd=='/id':
+        _say(out,chat,'Sizning Telegram raqamingiz: '+tg);return
     if same(text,CANCEL) or cmd=='/cancel':
         _home(c,tg,chat,out,profile);return
+    if _owner_command(c,tg,chat,text,out):return
+    if profile and not server.school_access(c,profile['school_id'])['open']:
+        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
     if profile and profile['role']=='admin' and (cmd=='/kod' or same(text,CODE_BTN)):
-        _say(out,chat,f"O‘qituvchilar kodi: {profile['join_code']}",DEPUTY_KB);return
+        _say(out,chat,f"O‘qituvchilar kodi: {profile['join_code']}",_deputy_kb(c,chat));return
     if profile and profile['role']=='admin' and (cmd=='/holat' or same(text,STATUS)):
-        _say(out,chat,_status_text(c,profile),DEPUTY_KB);return
+        _say(out,chat,_status_text(c,profile),_deputy_kb(c,chat));return
     if profile and profile['role']=='admin' and (cmd=='/pdf' or same(text,PDF_BTN)):
         _send_compiled(c,out,profile,chat,f"{profile['school_name']} | bugungi jamlanma");return
     if profile and profile['role']=='admin' and (cmd=='/oy' or same(text,MONTH_BTN)):
@@ -373,6 +488,8 @@ def _register(c,tg,chat,state,draft,text,out):
         school=c.execute('SELECT * FROM schools WHERE join_code=?',(code,)).fetchone() if len(code)==6 else None
         if not school:
             _say(out,chat,'Kod topilmadi. Direktor o‘rinbosaridan 6 xonali kodni so‘rang.',CANCEL_KB);return
+        if not server.school_access(c,school['id'])['open']:
+            _say(out,chat,'Bu maktabning obunasi tugagan. Direktor o‘rinbosari to‘lov qilishi kerak.',ROLE_KB);return
         draft={'school_id':school['id'],'school_name':school['name']}
         _touch(c,tg,'tch_first',draft,None)
         _say(out,chat,school['name']+'\nIsmingizni yozing.',CANCEL_KB);return
@@ -410,14 +527,14 @@ def _create_deputy(c,tg,chat,draft,school_name,out):
         if not server.code_taken(c,school_code) and not c.execute('SELECT 1 FROM schools WHERE join_code=?',(join_code,)).fetchone():break
     else:
         _say(out,chat,'Kod yaratilmadi. Qayta urinib ko‘ring.',CANCEL_KB);return
-    c.execute('INSERT INTO schools(district_id,code,name,director,executor,telegram_chat_id,join_code) VALUES(?,?,?,?,?,?,?)',(did,school_code,school_name,full,full,str(chat),join_code))
+    c.execute('INSERT INTO schools(district_id,code,name,director,executor,telegram_chat_id,join_code,created_on) VALUES(?,?,?,?,?,?,?,?)',(did,school_code,school_name,full,full,str(chat),join_code,server.today().isoformat()))
     school_id=c.execute('SELECT id FROM schools WHERE code=?',(school_code,)).fetchone()['id']
     login='tg'+tg
     c.execute("INSERT INTO users(district_id,school_id,login,password,role,name,status) VALUES(?,?,?,?,'admin',?,'active')",(did,school_id,login,server.password_hash(secrets.token_hex(16)),full))
     user_id=c.execute('SELECT id FROM users WHERE school_id=? AND login=?',(school_id,login)).fetchone()['id']
     _touch(c,tg,'',{},user_id)
     profile=_profile(c,{'user_id':user_id})
-    _say(out,chat,'Maktab ochildi.\n'+_deputy_text(profile),DEPUTY_KB)
+    _say(out,chat,'Maktab ochildi.\n'+_deputy_text(profile),_deputy_kb(c,chat))
 
 def _create_teacher(c,tg,chat,draft,raw_class,out):
     class_name=normalize_class(raw_class)
@@ -624,18 +741,20 @@ def _invite_deputy(c,out,chat,profile):
     admins=list(c.execute("SELECT id,name FROM users WHERE school_id=? AND role='admin' AND status='active' ORDER BY id",(profile['school_id'],)))
     if len(admins)>1:
         if admins[0]['id']!=profile['id']:
-            _say(out,chat,'Siz ikkinchi direktor o‘rinbosarisiz. Hisobotlar sizga ham keladi.',DEPUTY_KB);return
+            _say(out,chat,'Siz ikkinchi direktor o‘rinbosarisiz. Hisobotlar sizga ham keladi.',_deputy_kb(c,chat));return
         out.append({'chat_id':chat,'text':f"Ikkinchi o‘rinbosar: {admins[1]['name']}",'reply_markup':{'inline_keyboard':[[{'text':'Olib tashlash','callback_data':'d2x'}]]}})
         return
     code=str(secrets.randbelow(900000)+100000)
     c.execute('UPDATE schools SET deputy_invite=? WHERE id=?',(code,profile['school_id']))
-    _say(out,chat,f"Ikkinchi o‘rinbosar botda «Ikkinchi o‘rinbosar» ni bosib shu kodni yozsin:\n{code}\nKod bir marta ishlaydi.",DEPUTY_KB)
+    _say(out,chat,f"Ikkinchi o‘rinbosar botda «Ikkinchi o‘rinbosar» ni bosib shu kodni yozsin:\n{code}\nKod bir marta ishlaydi.",_deputy_kb(c,chat))
 
 def _join_deputy(c,tg,chat,text,out):
     code=re.sub(r'\D','',text)
     school=c.execute('SELECT * FROM schools WHERE deputy_invite=?',(code,)).fetchone() if len(code)==6 else None
     if not school:
         _say(out,chat,'Kod topilmadi. Birinchi direktor o‘rinbosaridan yangi kod so‘rang.',CANCEL_KB);return
+    if not server.school_access(c,school['id'])['open']:
+        _say(out,chat,'Bu maktabning obunasi tugagan. To‘lov tasdiqlangach kod ishlaydi.',ROLE_KB);return
     login='tg'+tg
     existing=c.execute('SELECT id,role,status,school_id FROM users WHERE login=?',(login,)).fetchone()
     if existing and not (existing['school_id']==school['id'] and existing['role']=='admin'):
@@ -649,7 +768,7 @@ def _join_deputy(c,tg,chat,text,out):
     c.execute("UPDATE schools SET deputy_chat_2=?,deputy_invite='' WHERE id=?",(str(chat),school['id']))
     _touch(c,tg,'',{},user_id)
     profile=_profile(c,{'user_id':user_id})
-    _say(out,chat,'Ikkinchi direktor o‘rinbosari sifatida kirdingiz. Hisobotlar sizga ham keladi.\n'+_deputy_text(profile),DEPUTY_KB)
+    _say(out,chat,'Ikkinchi direktor o‘rinbosari sifatida kirdingiz. Hisobotlar sizga ham keladi.\n'+_deputy_text(profile),_deputy_kb(c,chat))
 
 def _school_teacher(c,profile,uid):
     if not str(uid).isdigit():return None
@@ -664,7 +783,7 @@ def _staff_message(c,out,chat,profile):
         WHERE u.school_id=? AND u.role='teacher' AND u.status='active'
         ORDER BY cl.name,u.name''',(profile['school_id'],)))
     if not rows:
-        _say(out,chat,'Hali sinf rahbari yo‘q. O‘qituvchilar kodini yuboring.',DEPUTY_KB);return
+        _say(out,chat,'Hali sinf rahbari yo‘q. O‘qituvchilar kodini yuboring.',_deputy_kb(c,chat));return
     lines=[];buttons=[]
     for index,row in enumerate(rows,1):
         label=f"{row['class_name'] or '—'} — {row['name']}"
@@ -688,7 +807,7 @@ def _admin_edit_text(c,tg,chat,profile,state,draft,text,out):
     teacher=_school_teacher(c,profile,draft.get('id'))
     if not teacher:
         _touch(c,tg,'',{},profile['id'])
-        _say(out,chat,'Sinf rahbari topilmadi.',DEPUTY_KB);return
+        _say(out,chat,'Sinf rahbari topilmadi.',_deputy_kb(c,chat));return
     if state=='adm_name':
         name=clean_name(text)
         if not name:
@@ -837,7 +956,7 @@ def _send_span(c,out,profile,chat,scope,period,offer_previous=False):
     if offer_previous:
         _say(out,chat,caption,{'inline_keyboard':[[{'text':'O‘tgan o‘quv yili','callback_data':'yr:'+str(int(period)-1)}]]})
     if not any(row.get('submitted') for row in rows):
-        _say(out,chat,'Bu davrda hali davomat yo‘q.',DEPUTY_KB);return
+        _say(out,chat,'Bu davrda hali davomat yo‘q.',_deputy_kb(c,chat));return
     blob=make_summary_xlsx(rows,key,info,scope=scope)
     text=caption+' | '+str(sum(1 for row in rows if row.get('submitted')))+' ta sinf-kun'
     _send_school_file(out,school,blob,filename,text,key,chat)
@@ -847,9 +966,14 @@ def _send_span(c,out,profile,chat,scope,period,offer_previous=False):
         _send_school_file(out,school,chronic,'Surunkali-'+school['code']+'-'+key+'.xlsx',caption+' | 3 kundan ko‘p kelmaganlar',key,chat)
 
 def _on_callback(c,row,chat,tg,data,out):
+    if data.startswith(('payok:','payno:','paysee:')):
+        _payment_callback(c,chat,tg,data,out);return
     profile=_profile(c,row)
     if not profile:
         out[0]['toast']='Avval /start ni bosing';return
+    if not server.school_access(c,profile['school_id'])['open']:
+        out[0]['toast']='Obuna tugagan'
+        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
     if profile['role']=='admin' and data.startswith('mo:'):
         month=data.split(':',1)[1]
         try:server.month_value(month)
@@ -988,7 +1112,7 @@ def _remove_second_deputy(c,out,chat,profile):
     c.execute("UPDATE users SET status='removed' WHERE id=? AND school_id=?",(admins[1]['id'],profile['school_id']))
     c.execute("UPDATE schools SET deputy_chat_2='',deputy_invite='' WHERE id=?",(profile['school_id'],))
     out[0]['toast']='Olib tashlandi'
-    _say(out,chat,'Ikkinchi direktor o‘rinbosari olib tashlandi.',DEPUTY_KB)
+    _say(out,chat,'Ikkinchi direktor o‘rinbosari olib tashlandi.',_deputy_kb(c,chat))
 
 def poll():
     server.init()

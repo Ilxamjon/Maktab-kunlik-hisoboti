@@ -23,3 +23,11 @@ services:
         value: "1"
       - key: CRON_SECRET
         generateValue: true
+      - key: ADMIN_CHAT_IDS
+        sync: false
+      - key: ADMIN_CODE
+        sync: false
+      - key: PAYMENT_CARD
+        sync: false
+      - key: PAYMENT_NAME
+        sync: false

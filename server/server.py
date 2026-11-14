@@ -302,6 +302,19 @@ def migrate_v9(c):
     if 'deputy_invite' not in cols:c.execute("ALTER TABLE schools ADD COLUMN deputy_invite TEXT NOT NULL DEFAULT ''")
     c.execute('PRAGMA user_version=9')
 
+def migrate_v10(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=10:return
+    cols=_columns(c,'schools')
+    if 'created_on' not in cols:c.execute("ALTER TABLE schools ADD COLUMN created_on TEXT NOT NULL DEFAULT ''")
+    if 'paid_until' not in cols:c.execute("ALTER TABLE schools ADD COLUMN paid_until TEXT NOT NULL DEFAULT ''")
+    if 'sub_warned' not in cols:c.execute("ALTER TABLE schools ADD COLUMN sub_warned TEXT NOT NULL DEFAULT ''")
+    c.execute('''CREATE TABLE IF NOT EXISTS payments(
+        id INTEGER PRIMARY KEY, school_id INTEGER NOT NULL, chat_id TEXT NOT NULL,
+        deputy_name TEXT NOT NULL, school_name TEXT NOT NULL, file_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', created REAL NOT NULL)''')
+    c.execute('PRAGMA user_version=10')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -326,7 +339,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c);migrate_v8(c);migrate_v9(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c);migrate_v8(c);migrate_v9(c);migrate_v10(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -358,6 +371,78 @@ def deputy_chats(school):
         env=(os.getenv('TELEGRAM_CHAT_ID') or '').strip()
         if env:found.append(env)
     return found
+
+FEE_SUM=100_000
+TRIAL_DAYS=7
+
+def _add_month(day):
+    month=day.month+1
+    year=day.year+(month>12)
+    month=(month-1)%12+1
+    return day.replace(year=year,month=month,day=min(day.day,monthrange(year,month)[1]))
+
+def platform_admin_ids(c):
+    found=[]
+    for item in os.getenv('ADMIN_CHAT_IDS','').replace(';',',').split(','):
+        item=item.strip()
+        if item and item not in found:found.append(item)
+    row=c.execute("SELECT value FROM settings WHERE key='platform_admins'").fetchone()
+    if row:
+        for item in str(row['value']).split(','):
+            item=item.strip()
+            if item and item not in found:found.append(item)
+    return found
+
+def is_platform_admin(c,tg):
+    return str(tg) in platform_admin_ids(c)
+
+def bind_platform_admin(c,tg):
+    ids=platform_admin_ids(c)
+    if str(tg) not in ids:ids.append(str(tg))
+    value=','.join(ids)
+    c.execute("INSERT INTO settings(key,value) VALUES('platform_admins',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(value,))
+
+def admin_code_ok(code):
+    expected=os.getenv('ADMIN_CODE','').strip()
+    given=(code or '').strip()
+    if not expected or not given or len(given)!=len(expected):return False
+    return hmac.compare_digest(given,expected)
+
+def payment_details():
+    return os.getenv('PAYMENT_NAME','').strip(),os.getenv('PAYMENT_CARD','').strip()
+
+def school_access(c,school_id,day=None):
+    day=day or today()
+    row=school_row(c,school_id)
+    created=(row.get('created_on') or '').strip()
+    if not created:
+        created=day.isoformat()
+        c.execute('UPDATE schools SET created_on=? WHERE id=?',(created,school_id))
+    trial_until=date.fromisoformat(created)+timedelta(days=TRIAL_DAYS-1)
+    paid=(row.get('paid_until') or '').strip()
+    until=max(trial_until,date.fromisoformat(paid)) if paid else trial_until
+    return {'open':day<=until,'until':until,'days_left':(until-day).days,'trial':not paid or date.fromisoformat(paid)<trial_until}
+
+def extend_subscription(c,school_id,day=None):
+    day=day or today()
+    access=school_access(c,school_id,day)
+    base=access['until'] if access['open'] else day
+    until=_add_month(base)
+    c.execute("UPDATE schools SET paid_until=?,sub_warned='' WHERE id=?",(until.isoformat(),school_id))
+    return until
+
+def payment_text(access):
+    name,card=payment_details()
+    if access['days_left']<0:
+        lines=['Obuna tugagan. Bot hozir ishlamaydi.']
+    else:
+        lines=[f"Oylik obuna tugashiga {access['days_left']} kun qoldi."]
+    lines.extend(['','Keyingi oy uchun 100 000 so‘m ni shu kartaga o‘tkazing:'])
+    if name:lines.append(name)
+    if card:lines.append(card)
+    if not name or not card:lines.append('To‘lov rekvizitlari hali kiritilmagan.')
+    lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi oy ochiladi.'])
+    return '\n'.join(lines)
 
 def is_teaching_day(c,school_id,day):
     row=c.execute('SELECT teaching FROM calendar WHERE school_id=? AND day=?',(school_id,day)).fetchone()
@@ -738,6 +823,7 @@ def dispatch(method,path,data,token=''):
                 old=c.execute('SELECT * FROM reports WHERE school_id=? AND day=? AND class_id=?',(sid,day,cid)).fetchone()
                 if old and old['locked']:raise ApiError('Hisobot tasdiqlangan. Direktor qayta ochishi kerak.',409)
                 if not is_teaching_day(c,sid,day):raise ApiError('Bu sana dam olish kuni')
+                if not school_access(c,sid)['open']:raise ApiError('Obuna tugagan',403)
                 rev=old['revision'] if old else 0
                 if data.get('revision')!=rev:raise ApiError('Hisobot boshqa qurilmada yangilangan. Qayta oching.',409)
                 entries=data.get('entries')
@@ -909,6 +995,7 @@ def maybe_reminders(now=None):
     for school in schools:
         with connect() as c:
             c.execute('BEGIN IMMEDIATE')
+            if not school_access(c,school['id'],now.date())['open']:continue
             if not _mark_digest(c,school['id'],day,'remind'):continue
             if not is_teaching_day(c,school['id'],day):continue
             targets=list(c.execute('''SELECT b.telegram_id,cl.name AS class_name FROM classes cl
@@ -931,6 +1018,7 @@ def maybe_noon_digests(now=None):
     for school in schools:
         with connect() as c:
             c.execute('BEGIN IMMEDIATE')
+            if not school_access(c,school['id'],now.date())['open']:continue
             if not _mark_digest(c,school['id'],day,'noon'):continue
             if not is_teaching_day(c,school['id'],day):continue
             if not c.execute('SELECT 1 FROM classes WHERE school_id=?',(school['id'],)).fetchone():continue
@@ -950,6 +1038,7 @@ def maybe_chronic_digests(now=None):
         for school in schools:
             with connect() as c:
                 c.execute('BEGIN IMMEDIATE')
+                if not school_access(c,school['id'],now.date())['open']:continue
                 if not _mark_digest(c,school['id'],month,'chronic'):continue
                 report=monthly_summary(c,month,school['id'])
                 if not any(row.get('submitted') for row in report['rows']):continue
@@ -958,9 +1047,32 @@ def maybe_chronic_digests(now=None):
                 queued+=1
     return queued
 
+def maybe_subscription_warnings(now=None):
+    now=now or now_uz()
+    day=now.date();sent=0
+    with connect() as c:schools=list(c.execute('SELECT id FROM schools'))
+    for school in schools:
+        with connect() as c:
+            access=school_access(c,school['id'],day)
+            if not 1<=access['days_left']<=3:continue
+            row=school_row(c,school['id'])
+            if (row.get('sub_warned') or '')==access['until'].isoformat():continue
+            chats=deputy_chats(row)
+            text=payment_text(access)
+        delivered=False
+        for chat in chats:
+            try:
+                send_message(chat,text)
+                delivered=True
+                sent+=1
+            except Exception:LOG.exception('Obuna eslatmasi yuborilmadi')
+        if delivered:
+            with connect() as c:c.execute('UPDATE schools SET sub_warned=? WHERE id=?',(access['until'].isoformat(),school['id']))
+    return sent
+
 def run_due_jobs(now=None):
     now=now or now_uz()
-    return {'reminders':maybe_reminders(now),'queued':maybe_noon_digests(now),'chronic':maybe_chronic_digests(now)}
+    return {'reminders':maybe_reminders(now),'queued':maybe_noon_digests(now),'chronic':maybe_chronic_digests(now),'warnings':maybe_subscription_warnings(now)}
 
 def process_one():
     with connect() as c:
