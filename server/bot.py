@@ -3,7 +3,8 @@ import hashlib, hmac, json, logging, os, re, secrets, time
 from urllib.request import Request, urlopen
 import database, server
 from catalog import REASONS, EXCEL_LABELS
-from excel_report import make_summary_xlsx, XLSX
+from excel_report import MONTHS, make_summary_xlsx, XLSX
+import roster
 
 LOG=logging.getLogger('maktab-hisobot.bot')
 DEPUTY='Direktor o‘rinbosari'
@@ -12,6 +13,8 @@ ADD='O‘quvchi qo‘shish'
 LIST='O‘quvchilar'
 ATT='Bugungi davomat'
 PDF_BTN='Bugungi jadval'
+MONTH_BTN='Oylik hisobot'
+YEAR_BTN='Yillik hisobot'
 STATUS='Sinflar holati'
 CODE_BTN='Maktab kodi'
 CANCEL='Bekor qilish'
@@ -19,7 +22,7 @@ DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,ADD,LIST,ATT,PDF_BTN,STATUS,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,ADD,LIST,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
     text=(value or '').strip().lower()
@@ -39,7 +42,7 @@ def keyboard(*rows):
 
 ROLE_KB=keyboard([DEPUTY],[TEACHER])
 TEACHER_KB=keyboard([ADD],[LIST,ATT])
-DEPUTY_KB=keyboard([PDF_BTN],[STATUS,CODE_BTN])
+DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STATUS,CODE_BTN])
 CANCEL_KB=keyboard([CANCEL])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
@@ -130,10 +133,12 @@ def _handle(c,update):
         if c.execute('SELECT 1 FROM bot_updates WHERE update_id=?',(uid,)).fetchone():return []
         if int(uid)%100==0:c.execute('DELETE FROM bot_updates WHERE created<?',(time.time()-7*86400,))
         c.execute('INSERT INTO bot_updates(update_id,created) VALUES(?,?)',(int(uid),time.time()))
-    chat,user,text,callback=_parts(update)
+    chat,user,text,callback,document=_parts(update)
     if not chat or chat.get('type')!='private' or not user or not user.get('id'):return []
     tg=str(user['id']);chat_id=chat['id'];out=[]
     row=_ensure(c,tg)
+    if document:
+        _on_document(c,row,chat_id,tg,document,out);return out
     if callback is not None:
         out.append({'method':'answerCallbackQuery','id':callback.get('id') or '','toast':''})
         _on_callback(c,row,chat_id,tg,callback.get('data') or '',out)
@@ -148,9 +153,54 @@ def _handle(c,update):
 def _parts(update):
     if 'callback_query' in update:
         cq=update['callback_query'];msg=cq.get('message') or {}
-        return msg.get('chat') or {},cq.get('from') or {},None,cq
+        return msg.get('chat') or {},cq.get('from') or {},None,cq,None
     msg=update.get('message') or {}
-    return msg.get('chat') or {},msg.get('from') or {},msg.get('text'),None
+    return msg.get('chat') or {},msg.get('from') or {},msg.get('text'),None,msg.get('document')
+
+def fetch_file(file_id):
+    info=api('getFile',{'file_id':file_id}) or {}
+    path=str(info.get('file_path') or '')
+    if not path or '..' in path:raise server.ApiError('Fayl topilmadi')
+    token=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
+    url='https://api.telegram.org/file/bot'+token+'/'+path
+    with urlopen(url,timeout=30) as response:data=response.read(2_000_001)
+    if len(data)>2_000_000:raise server.ApiError('Fayl 2 MB dan katta')
+    return data
+
+def _on_document(c,row,chat,tg,document,out):
+    profile=_profile(c,row)
+    name=(document.get('file_name') or '').lower()
+    if not name.endswith('.xlsx'):
+        _say(out,chat,'Faqat .xlsx fayl yuboring. Ustunlar: F.I.SH, Jinsi, Yashash manzili.');return
+    if not profile or profile['role']!='teacher' or not profile.get('class_id'):
+        _say(out,chat,'Ro‘yxatni faqat o‘z sinfi bor sinf rahbari yuklaydi.');return
+    if int(document.get('file_size') or 0)>2_000_000:
+        _say(out,chat,'Fayl 2 MB dan katta.');return
+    try:parsed=roster.parse_roster(fetch_file(document.get('file_id') or ''))
+    except (ValueError,server.ApiError) as error:
+        _say(out,chat,str(getattr(error,'message',error)),TEACHER_KB);return
+    file_class=parsed['class_name']
+    if file_class and file_class!=profile['class_name']:
+        _say(out,chat,f"Fayldagi sinf {file_class}, siz esa {profile['class_name']} sinf rahbarisiz. Ro‘yxat yozilmadi.",TEACHER_KB);return
+    added=updated=0
+    existing={roster.name_key(item['name']):item for item in c.execute('SELECT id,name,active FROM students WHERE class_id=?',(profile['class_id'],))}
+    for student in parsed['students']:
+        found=existing.get(student['key'])
+        if found and found['active']:
+            c.execute('UPDATE students SET gender=?,address=? WHERE id=?',(student['gender'],student['address'],found['id']))
+            updated+=1
+        elif found:
+            c.execute('UPDATE students SET name=?,gender=?,address=?,active=1 WHERE id=?',(student['name'],student['gender'],student['address'],found['id']))
+            added+=1
+        else:
+            c.execute('INSERT INTO students(class_id,name,gender,address,active) VALUES(?,?,?,?,1)',(profile['class_id'],student['name'],student['gender'],student['address']))
+            added+=1
+    lines=[f"{profile['class_name']} sinfiga {added} o‘quvchi qo‘shildi."]
+    if updated:lines.append(f"Yangilandi: {updated}.")
+    if parsed['errors']:lines.append('O‘tkazildi:\n'+'\n'.join(parsed['errors'][:8]))
+    if not parsed['students'] and not parsed['errors']:lines=['Faylda o‘quvchi topilmadi.']
+    _touch(c,tg,'',{},profile['id'])
+    _say(out,chat,'\n'.join(lines),TEACHER_KB)
 
 def _ensure(c,tg):
     if not c.execute('SELECT 1 FROM bot_chats WHERE telegram_id=?',(tg,)).fetchone():
@@ -203,10 +253,10 @@ def _home(c,tg,chat,out,profile):
         _say(out,chat,_deputy_text(profile),DEPUTY_KB)
     else:
         count=c.execute('SELECT count(*) FROM students WHERE class_id=? AND active=1',(profile['class_id'],)).fetchone()[0]
-        _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}",TEACHER_KB)
+        _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\nRo‘yxatni .xlsx fayl qilib shu yerga yuborishingiz mumkin.",TEACHER_KB)
 
 def _deputy_text(profile):
-    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. Har bir jo‘natilgan davomat 1-jadvalga jamlanib sizga Excel fayl bo‘lib keladi."
+    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi. Oylik va yillik hisobotni shu yerdan yuklab olasiz."
 
 def _on_text(c,row,chat,tg,text,out):
     profile=_profile(c,row)
@@ -221,6 +271,10 @@ def _on_text(c,row,chat,tg,text,out):
         _say(out,chat,_status_text(c,profile),DEPUTY_KB);return
     if profile and profile['role']=='admin' and (cmd=='/pdf' or same(text,PDF_BTN)):
         _send_compiled(c,out,profile,chat,f"{profile['school_name']} | bugungi jamlanma");return
+    if profile and profile['role']=='admin' and (cmd=='/oy' or same(text,MONTH_BTN)):
+        _ask_month(out,chat);return
+    if profile and profile['role']=='admin' and (cmd=='/yil' or same(text,YEAR_BTN)):
+        _send_span(c,out,profile,chat,'year',str(server.school_year_start()),offer_previous=True);return
     if profile and _teacher_menu(c,row,profile,chat,tg,text,out):return
     state=row['state'] or ''
     draft=_draft(row)
@@ -360,7 +414,7 @@ def _create_teacher(c,tg,chat,draft,raw_class,out):
         _say(out,chat,error,CANCEL_KB);return
     _touch(c,tg,'',{},user_id)
     profile=_profile(c,{'user_id':user_id})
-    _say(out,chat,f"Ro‘yxatdan o‘tdingiz.\n{profile['school_name']}, {profile['class_name']} sinf.\nEndi o‘quvchilar ro‘yxatini kiriting.",TEACHER_KB)
+    _say(out,chat,f"Ro‘yxatdan o‘tdingiz.\n{profile['school_name']}, {profile['class_name']} sinf.\nO‘quvchini qo‘lda yozing yoki F.I.SH, Jinsi, Yashash manzili yozilgan .xlsx faylni yuboring.",TEACHER_KB)
 
 def _bind_class(c,tg,chat,profile,raw_class,out):
     class_name=normalize_class(raw_class)
@@ -406,7 +460,7 @@ def _save_student(c,tg,chat,profile,draft,address,out):
 def _students_message(c,out,chat,profile):
     rows=list(c.execute('SELECT id,name,gender FROM students WHERE class_id=? AND active=1 ORDER BY name',(profile['class_id'],)))
     if not rows:
-        _say(out,chat,'Hali o‘quvchi yo‘q. «O‘quvchi qo‘shish» ni bosing.',TEACHER_KB);return
+        _say(out,chat,'Hali o‘quvchi yo‘q. «O‘quvchi qo‘shish» ni bosing yoki .xlsx ro‘yxat yuboring.',TEACHER_KB);return
     lines=[f"{index}. {row['name']} ({'o‘g‘il' if row['gender']=='M' else 'qiz'})" for index,row in enumerate(rows,1)]
     buttons=[[{'text':'O‘chirish: '+row['name'][:40],'callback_data':'del:'+str(row['id'])}] for row in rows]
     out.append({'chat_id':chat,'text':'O‘quvchilar:\n'+'\n'.join(lines),'reply_markup':{'inline_keyboard':buttons}})
@@ -438,10 +492,56 @@ def _attendance_message(out,chat,profile,pupils,marks):
     text=f"{profile['class_name']} — bugungi davomat\nKelmagan o‘quvchini bosing va sababini tanlang. Qolganlar kelgan hisoblanadi.\n\n"+'\n'.join(lines)
     out.append({'chat_id':chat,'text':text[:4096],'reply_markup':{'inline_keyboard':buttons}})
 
+def _ask_month(out,chat):
+    day=server.today()
+    year,month=day.year,day.month
+    rows=[]
+    for _ in range(4):
+        key=f'{year:04d}-{month:02d}'
+        rows.append([{'text':f'{MONTHS[month]} {year}','callback_data':'mo:'+key}])
+        month-=1
+        if month==0:
+            month=12
+            year-=1
+    _say(out,chat,'Qaysi oyning hisobotini yuklaysiz?',{'inline_keyboard':rows})
+
+def _send_span(c,out,profile,chat,scope,period,offer_previous=False):
+    school=c.execute('SELECT * FROM schools WHERE id=?',(profile['school_id'],)).fetchone()
+    info=server.school_settings(c,profile['school_id'])
+    if scope=='month':
+        rows=server.monthly_summary(c,period,profile['school_id'])['rows']
+        filename='Davomat-'+school['code']+'-'+period+'.xlsx'
+        caption=f"{school['name']} | {period} | Oylik jadval"
+        key=period
+    else:
+        start_year=int(period)
+        rows=server.range_summary(c,profile['school_id'],f'{start_year}-09-01',f'{start_year+1}-08-31')
+        filename=f"Davomat-{school['code']}-{start_year}-{start_year+1}.xlsx"
+        caption=f"{school['name']} | {start_year}–{start_year+1}-o‘quv yili"
+        key=str(start_year)
+    if offer_previous:
+        _say(out,chat,caption,{'inline_keyboard':[[{'text':'O‘tgan o‘quv yili','callback_data':'yr:'+str(int(period)-1)}]]})
+    if not any(row.get('submitted') for row in rows):
+        _say(out,chat,'Bu davrda hali davomat yo‘q.',DEPUTY_KB);return
+    blob=make_summary_xlsx(rows,key,info,scope=scope)
+    text=caption+' | '+str(sum(1 for row in rows if row.get('submitted')))+' ta sinf-kun'
+    out.append({'pdf':blob,'content_type':XLSX,'chat_id':school['telegram_chat_id'],'notify_chat':chat,'text':text[:1000],'day':key,'filename':filename})
+
 def _on_callback(c,row,chat,tg,data,out):
     profile=_profile(c,row)
     if not profile:
         out[0]['toast']='Avval /start ni bosing';return
+    if profile['role']=='admin' and data.startswith('mo:'):
+        month=data.split(':',1)[1]
+        try:server.month_value(month)
+        except server.ApiError:
+            out[0]['toast']='Oy noto‘g‘ri';return
+        _send_span(c,out,profile,chat,'month',month);return
+    if profile['role']=='admin' and data.startswith('yr:'):
+        year=data.split(':',1)[1]
+        if not re.fullmatch(r'\d{4}',year):
+            out[0]['toast']='Yil noto‘g‘ri';return
+        _send_span(c,out,profile,chat,'year',year);return
     state=row['state'] or ''
     draft=_draft(row)
     if data in ('g:M','g:F') and state=='stu_gender' and profile['role']=='teacher':

@@ -1,7 +1,7 @@
 import io, json, os, re, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 import server as s
 import bot
 
@@ -58,16 +58,28 @@ class BotTests(unittest.TestCase):
         self.assertNotEqual(str(sheet_file['chat_id']),'22')
         self.assertNotEqual(str(sheet_file['chat_id']),'33')
         self.assertTrue(sheet_file['filename'].endswith('.xlsx'))
-        sheet=load_workbook(io.BytesIO(sheet_file['pdf'])).active
+        book=load_workbook(io.BytesIO(sheet_file['pdf']))
+        sheet=book.worksheets[0]
+        detail=book.worksheets[1]
+        self.assertEqual(sheet['A1'].font.name,'Times New Roman')
+        self.assertEqual(sheet['A1'].font.size,20)
+        self.assertEqual(sheet['G4'].alignment.textRotation,90)
         self.assertEqual(sheet['B7'].value,'Birinchi maktab')
         self.assertEqual(sheet['C7'].value,1)
         self.assertEqual(sheet['E7'].value,1)
         self.assertEqual(sheet['F7'].value,1)
         self.assertEqual(sheet['G4'].value,'Kasalligi tufayli')
         self.assertEqual(sheet['G7'].value,1)
+        self.assertIn("MA'LUMOT",sheet['A1'].value)
+        self.assertIn('holati',sheet['S2'].value)
         values=' '.join(str(cell.value) for row in sheet.iter_rows() for cell in row if cell.value is not None)
         self.assertNotIn('Ikkinchi',values)
         self.assertNotIn('Jasur',values)
+        self.assertIn("F.I.Sh.",detail['B3'].value)
+        self.assertEqual(detail['B4'].value,'Karimov Jasur')
+        self.assertEqual(detail['E4'].value,'7-B')
+        self.assertEqual(detail['G4'].value,1)
+        self.assertEqual(detail['I4'].value,1)
         with s.connect() as c:
             payload=json.loads(c.execute('SELECT payload FROM reports').fetchone()['payload'])
         self.assertEqual(payload[0]['status'],1)
@@ -119,3 +131,58 @@ class BotTests(unittest.TestCase):
         self.assertTrue(status.startswith('200'))
         self.assertIn(b'"ok"',body)
         process.assert_called_once()
+
+    def roster_file(self,klass='9-B',gender="O'g'il"):
+        book=Workbook();sheet=book.active
+        sheet['A1']='Sinf:';sheet['B1']=klass
+        sheet['A2']='Sinf rahbari:';sheet['D2']=' Askarova Dilnoza'
+        sheet['A4']='№';sheet['B4']='F.I.SH';sheet['C4']='Jinsi';sheet['D4']='Yashash manzili'
+        sheet['A5']=1;sheet['B5']='Karimov Jasur';sheet['C5']=gender;sheet['D5']='Xo‘jayli'
+        sheet['A6']=2;sheet['B6']='Valiyeva Madina';sheet['C6']='Qiz';sheet['D6']='Nukus'
+        sheet['A7']=3;sheet['B7']='Nomsiz';sheet['C7']='';sheet['D7']='Beruniy'
+        stream=io.BytesIO();book.save(stream);return stream.getvalue()
+
+    def test_teacher_uploads_roster_excel(self):
+        code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+        self.teacher(22,code,'Dilnoza','Askarova','9b')
+        update={'update_id':self.n+1,'message':{'message_id':1,'from':{'id':22},'chat':{'id':22,'type':'private'},'document':{'file_id':'file-1','file_name':'9-B.xlsx','file_size':1000}}}
+        self.n+=1
+        with patch.object(bot,'fetch_file',return_value=self.roster_file()):
+            sent=bot.handle_update(update)
+        self.assertIn('2 o‘quvchi',sent[-1]['text'])
+        self.assertIn('jinsi yo‘q',sent[-1]['text'])
+        with s.connect() as c:
+            rows=list(c.execute('SELECT name,gender,address FROM students WHERE active=1 ORDER BY name'))
+        self.assertEqual([(row['name'],row['gender']) for row in rows],[('Karimov Jasur','M'),('Valiyeva Madina','F')])
+        self.assertEqual(rows[0]['address'],'Xo‘jayli')
+        wrong={'update_id':self.n+1,'message':{'message_id':2,'from':{'id':22},'chat':{'id':22,'type':'private'},'document':{'file_id':'file-2','file_name':'7-A.xlsx','file_size':1000}}}
+        self.n+=1
+        with patch.object(bot,'fetch_file',return_value=self.roster_file('7-A')):
+            refused=bot.handle_update(wrong)
+        self.assertIn('yozilmadi',refused[-1]['text'])
+        with s.connect() as c:self.assertEqual(c.execute('SELECT count(*) FROM students WHERE active=1').fetchone()[0],2)
+
+    def test_deputy_downloads_month_and_year(self):
+        code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+        self.teacher(22,code,'Dilnoza','Karimova','7b')
+        self.add_student(22,'Karimov Jasur')
+        self.send(22,bot.ATT)
+        with s.connect() as c:student=c.execute("SELECT id FROM students WHERE name='Karimov Jasur'").fetchone()['id']
+        self.tap(22,'who:'+str(student))
+        self.tap(22,'why:'+str(student)+':1')
+        self.tap(22,'go')
+        day=s.today()
+        asked=self.send(11,bot.MONTH_BTN)
+        keys=[button['callback_data'] for row in asked[-1]['reply_markup']['inline_keyboard'] for button in row]
+        self.assertIn('mo:'+day.strftime('%Y-%m'),keys)
+        sent=self.tap(11,'mo:'+day.strftime('%Y-%m'))
+        book=load_workbook(io.BytesIO(next(item['pdf'] for item in sent if item.get('pdf') is not None)))
+        self.assertEqual(len(book.worksheets),2)
+        self.assertIn(bot.MONTHS[day.month],book.worksheets[0]['S2'].value)
+        self.assertEqual(book.worksheets[1]['B4'].value,'Karimov Jasur')
+        yearly=self.send(11,bot.YEAR_BTN)
+        year_file=next(item for item in yearly if item.get('pdf') is not None)
+        self.assertIn(str(s.school_year_start(day)),year_file['filename'])
+        year_book=load_workbook(io.BytesIO(year_file['pdf']))
+        self.assertIn("o'quv yili",year_book.worksheets[0]['S2'].value)
+        self.assertEqual(year_book.worksheets[1]['B4'].value,'Karimov Jasur')

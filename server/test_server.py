@@ -182,8 +182,8 @@ class Tests(unittest.TestCase):
             with patch.object(s,'send_document') as send:s.process_one();send.assert_called_once()
         with s.connect() as c:
             self.assertEqual(c.execute('SELECT count(*) FROM outbox').fetchone()[0],0)
-            self.assertEqual(c.execute("SELECT count(*) FROM reports WHERE day='2026-09-16'").fetchone()[0],0)
-            self.assertEqual(c.execute("SELECT count(*) FROM audit WHERE day='2026-09-16'").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT count(*) FROM reports WHERE day='2026-09-16'").fetchone()[0],1)
+            self.assertEqual(c.execute("SELECT count(*) FROM audit WHERE day='2026-09-16'").fetchone()[0],1)
     def test_logout(self):
         s.dispatch('POST','/logout',{},self.tokens[2])
         with self.assertRaises(s.ApiError):s.dispatch('GET','/classes',{},self.tokens[2])

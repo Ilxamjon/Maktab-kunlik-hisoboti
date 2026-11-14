@@ -353,6 +353,10 @@ def month_value(s):
     except (TypeError,ValueError):raise ApiError('Oy YYYY-MM formatida bo‘lsin')
     return s
 
+def school_year_start(day=None):
+    day=day or today()
+    return day.year if day.month>=9 else day.year-1
+
 def monthly_summary(c,month,school_id):
     month_value(month)
     days=[r[0] for r in c.execute('SELECT day FROM calendar WHERE school_id=? AND day LIKE ? AND teaching=1 ORDER BY day',(school_id,month+'-%'))]
@@ -513,6 +517,15 @@ def summary(c,day,school_id):
         entries=json.loads(r['payload']) if r else []
         result.append({'id':cl['id'],'class':cl['name'],'submitted':bool(r),'revision':r['revision'] if r else 0,'entries':entries,'total':len(entries) if r else c.execute('SELECT count(*) FROM students WHERE class_id=? AND active=1',(cl['id'],)).fetchone()[0],'day':day,'locked':bool(r['locked']) if r else False,'counts':[sum(e['status']==n for e in entries) for n in range(len(REASONS))],'teacher_login':cl['teacher_login'] or '','teacher_name':cl['teacher_name'] or cl['teacher_login'] or ''})
     return result
+
+def range_summary(c,school_id,start,end):
+    start,end=day_value(start),day_value(end)
+    reported=[r[0] for r in c.execute('SELECT DISTINCT day FROM reports WHERE school_id=? AND day>=? AND day<=? ORDER BY day',(school_id,start,end))]
+    configured=c.execute('SELECT count(*) FROM calendar WHERE school_id=? AND day>=? AND day<=?',(school_id,start,end)).fetchone()[0]>0
+    teaching=[r[0] for r in c.execute('SELECT day FROM calendar WHERE school_id=? AND day>=? AND day<=? AND teaching=1 ORDER BY day',(school_id,start,end))] if configured else []
+    rows=[]
+    for day in sorted(set(reported)|set(teaching)):rows.extend(summary(c,day,school_id))
+    return rows
 
 from reports import make_pdf
 from excel_report import make_summary_xlsx, XLSX
@@ -782,13 +795,13 @@ def dispatch(method,path,data,token=''):
         if route in ('/monthly','/monthly/pdf','/monthly/telegram'):
             month=month_value(data.get('month') if method=='POST' else query.get('month',[''])[0]);report=monthly_summary(c,month,sid)
             if route=='/monthly':return report
-            blob=make_pdf(report['rows'],month,school_settings(c,sid),monthly=True,calendar_configured=report['calendar_configured'])
+            blob=make_pdf(report['rows'],month,school_settings(c,sid),monthly=True,calendar_configured=report['calendar_configured']) if route.endswith('/pdf') else make_summary_xlsx(report['rows'],month,school_settings(c,sid),scope='month')
             if route.endswith('/pdf'):return blob
             if method!='POST':raise ApiError('POST kerak',405)
             key=hashlib.sha256(json.dumps(['monthly',sid,month,report,school_settings(c,sid)],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             c.execute("UPDATE outbox SET state='superseded' WHERE school_id=? AND day=? AND kind='monthly' AND state='pending' AND fingerprint<>?",(sid,month,key))
             c.execute('INSERT OR IGNORE INTO outbox(school_id,day,kind,fingerprint,pdf) VALUES(?,?,?,?,?)',(sid,month,'monthly',key,blob))
-            return {'ok':True,'message':'Oylik PDF navbatga qo‘yildi'}
+            return {'ok':True,'message':'Oylik jadval navbatga qo‘yildi'}
         if route=='/report/lock' and method=='POST':
             day=day_value(data.get('day'));cid=data.get('class_id');lock=data.get('locked')
             if type(lock)!=bool:raise ApiError('Qulflash holati kerak')
@@ -853,18 +866,16 @@ def process_one():
     if not token or not chat:
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+300,row['id']))
         return False
-    monthly=row['kind']=='monthly'
-    caption=school['name']+' | '+row['day']+(' | Oylik hisobot' if monthly else ' | Kunlik jadval')
-    filename=('Hisobot-' if monthly else 'Davomat-')+school['code']+'-'+row['day']+('.pdf' if monthly else '.xlsx')
-    try:send_document(row['pdf'],row['day'],token,chat,caption,filename,None if monthly else XLSX)
+    legacy_pdf=bytes(row['pdf'][:5])==b'%PDF-'
+    kind_label={'monthly':'Oylik hisobot','yearly':'Yillik hisobot'}.get(row['kind'],'Kunlik jadval')
+    caption=school['name']+' | '+row['day']+' | '+kind_label
+    filename='Davomat-'+school['code']+'-'+row['day']+('.pdf' if legacy_pdf else '.xlsx')
+    try:send_document(row['pdf'],row['day'],token,chat,caption,filename,'application/pdf' if legacy_pdf else XLSX)
     except Exception:
         LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
     else:
         with connect() as c:
-            if row['kind']!='monthly':
-                c.execute('DELETE FROM audit WHERE day=? AND class_id IN (SELECT id FROM classes WHERE school_id=?)',(row['day'],row['school_id']))
-                c.execute('DELETE FROM reports WHERE school_id=? AND day=?',(row['school_id'],row['day']))
             c.execute('DELETE FROM outbox WHERE id=?',(row['id'],))
     return True
 
