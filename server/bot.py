@@ -282,7 +282,7 @@ def _home(c,tg,chat,out,profile):
         _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\n«O‘quvchilar»dan ism, jins va manzilni tahrirlaysiz. Ro‘yxatni .xlsx fayl qilib ham yuborishingiz mumkin.",TEACHER_KB)
 
 def _deputy_text(profile):
-    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi."
+    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi.\n\n{server.contact_text()}"
 
 def _owner_command(c,tg,chat,text,out):
     cmd=command_name(text)
@@ -408,7 +408,7 @@ def _on_text(c,row,chat,tg,text,out):
         _register(c,tg,chat,state,draft,text,out);return
     if profile['role']=='admin' and state in ('adm_name','adm_class'):
         _admin_edit_text(c,tg,chat,profile,state,draft,text,out);return
-    if profile['role']=='admin' and state=='adm_off':
+    if profile['role']=='admin' and state in ('adm_off','adm_cal'):
         _mark_holiday_text(c,tg,chat,profile,text,out);return
     if profile['role']=='teacher' and state in ('stu_rename','stu_addr'):
         _student_edit_text(c,tg,chat,profile,state,draft,text,out);return
@@ -705,9 +705,10 @@ def _holiday_message(c,out,chat,profile):
         'Shanba: '+('dam olish' if school['saturday_off'] else 'o‘quv kuni'),
         'Yakshanba: '+('dam olish' if school['sunday_off'] else 'o‘quv kuni'),
         'Yaqin dam kunlari: '+(', '.join(upcoming[:8]) or 'yo‘q'),
-        'Bayram sanasini 08.12.2026 ko‘rinishida yozing. Qayta yozsangiz, o‘quv kuniga aylanadi.',
+        'Bayram kunlarini kalendardan belgilang yoki sanani 08.12.2026 ko‘rinishida yozing.',
     ]
     buttons=[
+        [{'text':'Bayram kalendari','callback_data':'ds:cal'}],
         [{'text':'Shanbani almashtirish','callback_data':'ds:sat'},{'text':'Yakshanbani almashtirish','callback_data':'ds:sun'}],
         [{'text':'Bugunni dam qilish','callback_data':'ds:today'}],
     ]
@@ -717,9 +718,116 @@ def _mark_holiday_text(c,tg,chat,profile,text,out):
     parsed=_parse_day(text)
     if not parsed:
         _say(out,chat,'Sanani 08.12.2026 ko‘rinishida yozing.',CANCEL_KB);return
+    row=c.execute('SELECT state FROM bot_chats WHERE telegram_id=?',(tg,)).fetchone()
+    if row and row['state']=='adm_cal':
+        draft=_calendar_draft(c,tg)
+        if draft.get('month') and draft.get('month')!=parsed[:7]:
+            _save_calendar_draft(c,profile['school_id'],tg)
+            _open_calendar(c,tg,chat,profile,out,parsed[:7])
+        _pick_calendar_day(c,tg,chat,profile,parsed,out);return
     _toggle_day(c,profile['school_id'],parsed)
     _touch(c,tg,'adm_off',{},profile['id'])
     _holiday_message(c,out,chat,profile)
+
+def _month_parts(month):
+    from calendar import monthrange
+    from datetime import date as _date
+    if not re.fullmatch(r'\d{4}-\d{2}',month or ''):return None
+    year,mon=int(month[:4]),int(month[5:7])
+    if not 1<=mon<=12:return None
+    return year,mon,monthrange(year,mon)[1],_date
+
+def _calendar_draft(c,tg):
+    row=c.execute('SELECT * FROM bot_chats WHERE telegram_id=?',(tg,)).fetchone()
+    return _draft(row) if row else {}
+
+def _off_days(c,school_id,month):
+    parts=_month_parts(month)
+    if not parts:return []
+    year,mon,count,day_type=parts
+    return [day_type(year,mon,day).isoformat() for day in range(1,count+1) if not server.is_teaching_day(c,school_id,day_type(year,mon,day).isoformat())]
+
+def _calendar_message(out,chat,month,picked):
+    parts=_month_parts(month)
+    year,mon,_,day_type=parts
+    chosen=sorted(picked)
+    shown=', '.join(day_type.fromisoformat(item).strftime('%d.%m') for item in chosen) if chosen else 'yo‘q'
+    text=f"{MONTHS[mon]} {year}\nDam kunlarini bosing. Bir nechtasini belgilab, «Saqlash» ni bosing.\nTanlangan: {shown}\nDu  Se  Ch  Pa  Ju  Sh  Ya"
+    out.append({'chat_id':chat,'text':text,'reply_markup':{'inline_keyboard':_calendar_keyboard(month,picked)}})
+
+def _calendar_keyboard(month,picked):
+    parts=_month_parts(month)
+    year,mon,count,day_type=parts
+    first=day_type(year,mon,1).weekday()
+    rows=[]
+    week=[{'text':'·','callback_data':'ds:x'} for _ in range(first)]
+    for day in range(1,count+1):
+        iso=day_type(year,mon,day).isoformat()
+        week.append({'text':('•'+str(day)) if iso in picked else str(day),'callback_data':'ds:d:'+iso})
+        if len(week)==7:
+            rows.append(week);week=[]
+    if week:
+        week.extend({'text':'·','callback_data':'ds:x'} for _ in range(7-len(week)))
+        rows.append(week)
+    prev_mon,prev_year=(12,year-1) if mon==1 else (mon-1,year)
+    next_mon,next_year=(1,year+1) if mon==12 else (mon+1,year)
+    rows.append([
+        {'text':'‹','callback_data':f'ds:m:{prev_year:04d}-{prev_mon:02d}'},
+        {'text':'Saqlash','callback_data':'ds:save'},
+        {'text':'›','callback_data':f'ds:m:{next_year:04d}-{next_mon:02d}'},
+    ])
+    rows.append([{'text':'Orqaga','callback_data':'ds:back'}])
+    return rows
+
+def _open_calendar(c,tg,chat,profile,out,month=None):
+    if not month:
+        today=server.today();month=f'{today.year:04d}-{today.month:02d}'
+    if not _month_parts(month):
+        _toast(out,'Oy noto‘g‘ri');return
+    picked=_off_days(c,profile['school_id'],month)
+    _touch(c,tg,'adm_cal',{'month':month,'picked':picked},profile['id'])
+    _calendar_message(out,chat,month,set(picked))
+
+def _pick_calendar_day(c,tg,chat,profile,iso,out):
+    from datetime import date as _date
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',iso or ''):
+        _toast(out,'Sana noto‘g‘ri');return
+    try:_date.fromisoformat(iso)
+    except ValueError:
+        _toast(out,'Sana noto‘g‘ri');return
+    draft=_calendar_draft(c,tg)
+    month=draft.get('month') or iso[:7]
+    if iso[:7]!=month:
+        _toast(out,'Shu oydan kun tanlang');return
+    picked=set(draft.get('picked') or [])
+    if iso in picked:picked.remove(iso)
+    else:picked.add(iso)
+    _touch(c,tg,'adm_cal',{'month':month,'picked':sorted(picked)},profile['id'])
+    _calendar_message(out,chat,month,picked)
+
+def _save_calendar_draft(c,school_id,tg):
+    from datetime import date as _date
+    draft=_calendar_draft(c,tg)
+    month=draft.get('month') or ''
+    parts=_month_parts(month)
+    if not parts:return False
+    year,mon,count,_=parts
+    picked=set(draft.get('picked') or [])
+    school=server.school_row(c,school_id)
+    for day in range(1,count+1):
+        current=_date(year,mon,day)
+        iso=current.isoformat()
+        desired=iso not in picked
+        default=not ((current.weekday()==5 and school.get('saturday_off')) or (current.weekday()==6 and school.get('sunday_off')))
+        if desired==default:
+            c.execute('DELETE FROM calendar WHERE school_id=? AND day=?',(school_id,iso))
+        else:
+            teaching=1 if desired else 0
+            c.execute('INSERT INTO calendar(school_id,day,teaching) VALUES(?,?,?) ON CONFLICT(school_id,day) DO UPDATE SET teaching=excluded.teaching',(school_id,iso,teaching))
+    return True
+
+def _toast(out,text):
+    if out and out[0].get('method')=='answerCallbackQuery':out[0]['toast']=text
 
 def _parse_day(text):
     from datetime import date as _date
@@ -1096,6 +1204,22 @@ def _send_school_file(out,school,blob,filename,text,day,notify_chat):
 
 def _holiday_callback(c,tg,chat,profile,data,out):
     action=data.split(':',1)[1]
+    if action=='x':return
+    if action=='cal':
+        _open_calendar(c,tg,chat,profile,out);return
+    if action=='back':
+        _save_calendar_draft(c,profile['school_id'],tg)
+        _touch(c,tg,'adm_off',{},profile['id'])
+        _holiday_message(c,out,chat,profile);return
+    if action=='save':
+        if _save_calendar_draft(c,profile['school_id'],tg):_toast(out,'Saqlandi')
+        draft=_calendar_draft(c,tg)
+        _open_calendar(c,tg,chat,profile,out,draft.get('month'));return
+    if action.startswith('m:'):
+        _save_calendar_draft(c,profile['school_id'],tg)
+        _open_calendar(c,tg,chat,profile,out,action[2:]);return
+    if action.startswith('d:'):
+        _pick_calendar_day(c,tg,chat,profile,action[2:],out);return
     if action=='sat':
         c.execute('UPDATE schools SET saturday_off=CASE saturday_off WHEN 1 THEN 0 ELSE 1 END WHERE id=?',(profile['school_id'],))
     elif action=='sun':

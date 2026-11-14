@@ -300,6 +300,8 @@ class BotTests(unittest.TestCase):
             home=self.send(11,'/start')
             labels=[button['text'] for row in home[-1]['reply_markup']['keyboard'] for button in row]
             self.assertNotIn(bot.ADMIN_BTN,labels)
+            self.assertIn('Tel: 975627989',home[-1]['text'])
+            self.assertIn('Nukus shahri',home[-1]['text'])
             self.assertNotIn('Maktablar:',self.send(11,bot.ADMIN_BTN)[-1]['text'])
             panel=self.send(99,bot.ADMIN_BTN)
             self.assertIn('Birinchi maktab',panel[-1]['text'])
@@ -313,6 +315,8 @@ class BotTests(unittest.TestCase):
             text=send.call_args.args[1]
             self.assertIn('Oylik obuna tugashiga 3 kun qoldi',text)
             self.assertIn('100 000 so‘m',text)
+            self.assertIn('Ilxam (admin)',text)
+            self.assertIn('Tel: 975627989',text)
             self.assertIn('Test Egası',text)
             self.assertIn('8600 0000 0000 0000',text)
             self.assertEqual(send.call_args.args[0],'11')
@@ -332,3 +336,43 @@ class BotTests(unittest.TestCase):
             approved=self.tap(99,payment)
             self.assertTrue(any('Tasdiqlandi' in item.get('text','') for item in approved))
             self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
+
+    def test_deputy_marks_several_holidays_on_the_month_calendar(self):
+        from datetime import date
+        self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+        self.deputy(33,'Bobur','Qodirov','Ikkinchi maktab')
+        opened=self.send(11,bot.DAYS)
+        labels=[button['text'] for row in opened[-1]['reply_markup']['inline_keyboard'] for button in row]
+        self.assertIn('Bayram kalendari',labels)
+        shown=self.tap(11,'ds:cal')
+        self.assertIn('Saqlash',str(shown[-1]['reply_markup']))
+        today=s.today()
+        weekdays=[date(today.year,today.month,day).isoformat() for day in range(1,29) if date(today.year,today.month,day).weekday()<5]
+        first,second,third=weekdays[:3]
+        self.tap(11,'ds:d:'+first)
+        self.tap(11,'ds:d:'+second)
+        saved=self.tap(11,'ds:save')
+        self.assertEqual(saved[0].get('toast'),'Saqlandi')
+        with s.connect() as c:
+            school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
+            other=c.execute("SELECT id FROM schools WHERE name='Ikkinchi maktab'").fetchone()['id']
+            self.assertFalse(s.is_teaching_day(c,school,first))
+            self.assertFalse(s.is_teaching_day(c,school,second))
+            self.assertTrue(s.is_teaching_day(c,school,third))
+            self.assertTrue(s.is_teaching_day(c,other,first))
+        nxt=today.month%12+1
+        year=today.year+(today.month==12)
+        moved=self.tap(11,f'ds:m:{year:04d}-{nxt:02d}')
+        self.assertIn(bot.MONTHS[nxt],moved[-1]['text'])
+        with s.connect() as c:
+            self.assertFalse(s.is_teaching_day(c,school,first))
+        later=f'{year:04d}-{nxt:02d}-03'
+        self.tap(11,'ds:d:'+later)
+        self.tap(11,'ds:save')
+        self.tap(11,'ds:m:'+first[:7])
+        self.tap(11,'ds:d:'+first)
+        cleared=self.tap(11,'ds:save')
+        self.assertEqual(cleared[0].get('toast'),'Saqlandi')
+        with s.connect() as c:
+            self.assertTrue(s.is_teaching_day(c,school,first))
+            self.assertFalse(s.is_teaching_day(c,school,later))

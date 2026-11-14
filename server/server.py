@@ -431,6 +431,9 @@ def extend_subscription(c,school_id,day=None):
     c.execute("UPDATE schools SET paid_until=?,sub_warned='' WHERE id=?",(until.isoformat(),school_id))
     return until
 
+def contact_text():
+    return 'Qayta aloqa: Ilxam (admin)\nTel: 975627989\nManzil: Nukus shahri'
+
 def payment_text(access):
     name,card=payment_details()
     if access['days_left']<0:
@@ -441,7 +444,7 @@ def payment_text(access):
     if name:lines.append(name)
     if card:lines.append(card)
     if not name or not card:lines.append('To‘lov rekvizitlari hali kiritilmagan.')
-    lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi oy ochiladi.'])
+    lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi oy ochiladi.','',contact_text()])
     return '\n'.join(lines)
 
 def is_teaching_day(c,school_id,day):
