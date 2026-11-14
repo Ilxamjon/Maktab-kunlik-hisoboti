@@ -2,7 +2,8 @@ name: Noon Telegram delivery
 
 on:
   schedule:
-    - cron: "5 7 * * *" # 12:05 Asia/Tashkent (UTC+5)
+    - cron: "30 4 * * *" # 09:30 Asia/Tashkent — eslatma
+    - cron: "0 6 * * *" # 11:00 Asia/Tashkent — kunlik jamlanma
   workflow_dispatch:
 
 jobs:

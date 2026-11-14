@@ -1,4 +1,5 @@
 import io, json, os, re, tempfile, unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
@@ -53,12 +54,17 @@ class BotTests(unittest.TestCase):
         self.tap(22,'who:'+str(student))
         self.tap(22,'why:'+str(student)+':1')
         sent=self.tap(22,'go')
-        sheet_file=next(item for item in sent if item.get('pdf') is not None)
-        self.assertEqual(str(sheet_file['chat_id']),'11')
-        self.assertNotEqual(str(sheet_file['chat_id']),'22')
-        self.assertNotEqual(str(sheet_file['chat_id']),'33')
-        self.assertTrue(sheet_file['filename'].endswith('.xlsx'))
-        book=load_workbook(io.BytesIO(sheet_file['pdf']))
+        self.assertFalse(any(item.get('pdf') is not None for item in sent))
+        self.assertIn('11:00',sent[-1]['text'])
+        noon=datetime.combine(s.today(),datetime.min.time()).replace(hour=11,tzinfo=s.TZ)
+        self.assertEqual(s.maybe_noon_digests(noon),1)
+        with s.connect() as c:
+            queued=list(c.execute('SELECT school_id,pdf FROM outbox'))
+        self.assertEqual(len(queued),1)
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT telegram_chat_id FROM schools WHERE id=?',(queued[0]['school_id'],)).fetchone()['telegram_chat_id'],'11')
+            self.assertNotEqual(c.execute("SELECT telegram_chat_id FROM schools WHERE name='Ikkinchi maktab'").fetchone()['telegram_chat_id'],'11')
+        book=load_workbook(io.BytesIO(queued[0]['pdf']))
         sheet=book.worksheets[0]
         detail=book.worksheets[1]
         self.assertEqual(sheet['A1'].font.name,'Times New Roman')
@@ -227,4 +233,58 @@ class BotTests(unittest.TestCase):
             self.assertEqual(c.execute('SELECT count(*) FROM students WHERE id=? AND active=1',(student,)).fetchone()[0],1)
         home=self.send(22,'/start')
         self.assertIn('Maktab Hisobot',home[-1]['text'])
-        self.tap(33,'ty:'+str(teacher))
+
+    def test_reminder_roster_move_holiday_second_deputy_and_chronic(self):
+        import roster
+        from excel_report import make_chronic_xlsx
+        code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+        self.teacher(22,code,'Dilnoza','Karimova','7b')
+        self.teacher(44,code,'Sardor','Azimov','8a')
+        self.add_student(22,'Karimov Jasur')
+        with s.connect() as c:student=c.execute("SELECT id FROM students WHERE name='Karimov Jasur'").fetchone()['id']
+        self.send(22,bot.ATT)
+        self.tap(22,'who:'+str(student));self.tap(22,'why:'+str(student)+':1');self.tap(22,'go')
+        morning=datetime.combine(s.today(),datetime.min.time()).replace(hour=9,minute=30,tzinfo=s.TZ)
+        with patch.object(s,'send_message') as send:
+            self.assertEqual(s.maybe_reminders(morning),1)
+        self.assertIn('8A',send.call_args.args[1])
+        self.assertIn('Bugungi davomat hali yo‘q',send.call_args.args[1])
+        self.assertEqual(send.call_args.args[0],'44')
+        exported=self.send(22,bot.ROSTER_BTN)
+        parsed=roster.parse_roster(next(item['pdf'] for item in exported if item.get('pdf') is not None))
+        self.assertEqual(parsed['students'][0]['name'],'Karimov Jasur')
+        self.assertEqual(parsed['class_name'],'7B')
+        self.tap(22,'sm:'+str(student))
+        moved=self.send(22,'8A')
+        self.assertIn('o‘tkazildi',moved[-1]['text'])
+        with s.connect() as c:
+            self.assertEqual(c.execute('SELECT name FROM classes WHERE id=(SELECT class_id FROM students WHERE id=?)',(student,)).fetchone()['name'],'8A')
+            payload=json.loads(c.execute('SELECT payload FROM reports').fetchone()['payload'])
+        self.assertEqual(payload[0]['name'],'Karimov Jasur')
+        with s.connect() as c:
+            school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
+            c.execute('INSERT INTO calendar(school_id,day,teaching) VALUES(?,?,0)',(school,s.today().isoformat()))
+        blocked=self.send(44,bot.ATT)
+        self.assertIn('dam olish',blocked[-1]['text'])
+        invited=self.send(11,bot.DEPUTY2)
+        invite=re.search(r'(\d{6})',invited[-1]['text']).group(1)
+        self.send(55,'/start');self.send(55,bot.DEPUTY2)
+        joined=self.send(55,invite)
+        self.assertIn('sizga ham keladi',joined[-1]['text'])
+        with s.connect() as c:self.assertEqual(c.execute('SELECT deputy_chat_2 FROM schools WHERE id=?',(school,)).fetchone()['deputy_chat_2'],'55')
+        with s.connect() as c:
+            class_id=c.execute("SELECT id FROM classes WHERE name='8A'").fetchone()['id']
+            c.execute("INSERT INTO students(class_id,name,gender,address,active) VALUES(?,?,?,?,1)",(class_id,'Qisqa Keldi','M',''))
+            other=c.execute("SELECT id FROM students WHERE name='Qisqa Keldi'").fetchone()['id']
+            for index,day in enumerate(('2026-10-05','2026-10-06','2026-10-07','2026-10-08')):
+                entries=[
+                    {'id':student,'name':'Karimov Jasur','gender':'M','address':'','status':1,'class_id':class_id,'active':1,'note':''},
+                    {'id':other,'name':'Qisqa Keldi','gender':'M','address':'','status':1 if index<3 else 0,'class_id':class_id,'active':1,'note':''},
+                ]
+                c.execute('INSERT INTO reports(school_id,day,class_id,revision,payload,updated) VALUES(?,?,?,?,?,?)',(school,day,class_id,1,json.dumps(entries,ensure_ascii=False),1))
+            people=s.chronic_students(s.monthly_summary(c,'2026-10',school)['rows'])
+        self.assertEqual([item['name'] for item in people],['Karimov Jasur'])
+        book=load_workbook(io.BytesIO(make_chronic_xlsx(people,'2026-10',{'name':'Birinchi maktab'})))
+        self.assertEqual(book.sheetnames,['Surunkali'])
+        self.assertEqual(book.active['B4'].value,'Karimov Jasur')
+        self.assertEqual(book.active['D4'].value,4)

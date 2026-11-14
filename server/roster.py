@@ -1,6 +1,6 @@
-"""Read a class teacher's Excel roster: F.I.SH, gender, and address."""
+"""Read and write a class teacher's Excel roster: F.I.SH, gender, and address."""
 import io, re
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 def _norm(value):
     text=str(value or '').strip().lower()
@@ -76,3 +76,20 @@ def parse_roster(blob):
         if len(address)>300:address=address[:300]
         students.append({'name':name,'gender':gender,'address':address,'key':key})
     return {'class_name':file_class,'students':students,'errors':errors}
+
+def display_class(name):
+    match=re.fullmatch(r'(\d{1,2})([A-Za-zА-Яа-яЁё])',(name or '').strip())
+    if match:return match.group(1)+'-'+match.group(2).upper()
+    return (name or '').strip()
+
+def make_roster_xlsx(class_name,students):
+    book=Workbook();sheet=book.active;sheet.title='Royxat'
+    sheet['A1']='Sinf:';sheet['B1']=display_class(class_name)
+    sheet['A4']='№';sheet['B4']='F.I.SH';sheet['C4']='Jinsi';sheet['D4']='Yashash manzili'
+    for index,student in enumerate(students,1):
+        sheet.cell(4+index,1,index)
+        sheet.cell(4+index,2,student.get('name') or '')
+        sheet.cell(4+index,3,"O'g'il" if student.get('gender')=='M' else 'Qiz')
+        sheet.cell(4+index,4,student.get('address') or '')
+    for letter,width in zip('ABCD',(8,32,14,36)):sheet.column_dimensions[letter].width=width
+    stream=io.BytesIO();book.save(stream);return stream.getvalue()

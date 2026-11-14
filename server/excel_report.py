@@ -219,3 +219,28 @@ def make_summary_xlsx(rows,period,school=None,scope='day'):
     second,detail=_summary_sheet(book,rows,period,school,scope)
     _detail_sheet(book,second,detail,rows,school)
     stream=io.BytesIO();book.save(stream);return stream.getvalue()
+
+def make_chronic_xlsx(people,period,school=None):
+    school=school or {}
+    name=school.get('name') or 'Maktab'
+    book=Workbook();sheet=book.active;sheet.title='Surunkali'
+    sheet.merge_cells('A1:E1')
+    _write(sheet,1,1,f"{name} — {period} — 3 kundan ko'p kelmagan o'quvchilar",16,True,horizontal='left')
+    for column,text in enumerate(('№','F.I.Sh.','Sinf','Kunlar','Sabablar'),1):
+        _write(sheet,3,column,text,14,True)
+        sheet.cell(3,column).border=THIN
+    if not people:
+        sheet.merge_cells('A4:E4')
+        _write(sheet,4,1,"Bu davrda 3 kundan ko'p kelmagan o'quvchi yo'q.",14,horizontal='left')
+    for index,person in enumerate(people,1):
+        reasons=', '.join(f'{label} ({count})' for label,count in sorted(person.get('reasons',{}).items()))
+        values=(index,person.get('name') or '',class_label(person.get('class')),person.get('days') or 0,reasons)
+        for column,value in enumerate(values,1):
+            _write(sheet,3+index,column,value,14,horizontal='left' if column in (2,5) else 'center',fmt='0' if column in (1,4) else None)
+            sheet.cell(3+index,column).border=THIN
+    for letter,width in zip('ABCDE',(8,36,14,12,55)):sheet.column_dimensions[letter].width=width
+    sheet.row_dimensions[1].height=30
+    sheet.page_setup.orientation='landscape'
+    sheet.page_setup.fitToWidth=1
+    sheet.sheet_properties.pageSetUpPr.fitToPage=True
+    stream=io.BytesIO();book.save(stream);return stream.getvalue()

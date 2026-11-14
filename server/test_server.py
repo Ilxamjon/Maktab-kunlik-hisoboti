@@ -156,7 +156,7 @@ class Tests(unittest.TestCase):
         with s.connect() as c:
             self.assertEqual(c.execute("SELECT count(*) FROM outbox WHERE kind='noon'").fetchone()[0],1)
             self.assertEqual(c.execute("SELECT count(*) FROM digests WHERE kind='noon'").fetchone()[0],1)
-        before=datetime(2026,9,16,11,59,tzinfo=s.TZ)
+        before=datetime(2026,9,16,10,59,tzinfo=s.TZ)
         self.assertEqual(s.maybe_noon_digests(before),0)
     def test_conflict_and_correction(self):
         self.submit()

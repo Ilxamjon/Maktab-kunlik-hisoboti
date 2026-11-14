@@ -3,7 +3,7 @@ import hashlib, hmac, json, logging, os, re, secrets, time
 from urllib.request import Request, urlopen
 import database, server
 from catalog import REASONS, EXCEL_LABELS
-from excel_report import MONTHS, make_summary_xlsx, XLSX
+from excel_report import MONTHS, make_chronic_xlsx, make_summary_xlsx, XLSX
 import roster
 
 LOG=logging.getLogger('maktab-hisobot.bot')
@@ -11,19 +11,22 @@ DEPUTY='Direktor o‘rinbosari'
 TEACHER='Sinf rahbari'
 ADD='O‘quvchi qo‘shish'
 LIST='O‘quvchilar'
+ROSTER_BTN='Ro‘yxat fayli'
 ATT='Bugungi davomat'
 PDF_BTN='Bugungi jadval'
 MONTH_BTN='Oylik hisobot'
 YEAR_BTN='Yillik hisobot'
 STATUS='Sinflar holati'
 STAFF='Sinf rahbarlari'
+DAYS='Dam olish'
+DEPUTY2='Ikkinchi o‘rinbosar'
 CODE_BTN='Maktab kodi'
 CANCEL='Bekor qilish'
 DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,ADD,LIST,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
     text=(value or '').strip().lower()
@@ -41,9 +44,9 @@ def command_name(value):
 def keyboard(*rows):
     return {'keyboard':[[{'text':item} for item in row] for row in rows],'resize_keyboard':True}
 
-ROLE_KB=keyboard([DEPUTY],[TEACHER])
-TEACHER_KB=keyboard([ADD],[LIST,ATT])
-DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[CODE_BTN])
+ROLE_KB=keyboard([DEPUTY],[TEACHER],[DEPUTY2])
+TEACHER_KB=keyboard([ADD],[LIST,ATT],[ROSTER_BTN])
+DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN])
 CANCEL_KB=keyboard([CANCEL])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
@@ -247,9 +250,7 @@ def _home(c,tg,chat,out,profile):
         _touch(c,tg,'fix_class',{},profile['id'])
         _say(out,chat,'Qaysi sinfga sinf rahbarisiz? Masalan: 7B',CANCEL_KB)
         return
-    if profile['role']=='admin' and str(profile.get('telegram_chat_id') or '')!=str(chat):
-        c.execute('UPDATE schools SET telegram_chat_id=? WHERE id=?',(str(chat),profile['school_id']))
-        profile['telegram_chat_id']=str(chat)
+    if profile['role']=='admin':_bind_deputy_chat(c,profile,chat)
     _touch(c,tg,'',{},profile['id'])
     if profile['role']=='admin':
         _say(out,chat,_deputy_text(profile),DEPUTY_KB)
@@ -280,6 +281,11 @@ def _on_text(c,row,chat,tg,text,out):
     if profile and profile['role']=='admin' and (cmd=='/rahbarlar' or same(text,STAFF)):
         _touch(c,tg,'',{},profile['id'])
         _staff_message(c,out,chat,profile);return
+    if profile and profile['role']=='admin' and (cmd=='/dam' or same(text,DAYS)):
+        _touch(c,tg,'adm_off',{},profile['id'])
+        _holiday_message(c,out,chat,profile);return
+    if profile and profile['role']=='admin' and (cmd=='/orinbosar' or same(text,DEPUTY2)):
+        _invite_deputy(c,out,chat,profile);return
     if profile and _teacher_menu(c,row,profile,chat,tg,text,out):return
     state=row['state'] or ''
     draft=_draft(row)
@@ -287,8 +293,12 @@ def _on_text(c,row,chat,tg,text,out):
         _register(c,tg,chat,state,draft,text,out);return
     if profile['role']=='admin' and state in ('adm_name','adm_class'):
         _admin_edit_text(c,tg,chat,profile,state,draft,text,out);return
+    if profile['role']=='admin' and state=='adm_off':
+        _mark_holiday_text(c,tg,chat,profile,text,out);return
     if profile['role']=='teacher' and state in ('stu_rename','stu_addr'):
         _student_edit_text(c,tg,chat,profile,state,draft,text,out);return
+    if profile['role']=='teacher' and state=='stu_move':
+        _move_student(c,tg,chat,profile,draft,text,out);return
     if state=='fix_class':
         _bind_class(c,tg,chat,profile,text,out);return
     if state=='stu_name':
@@ -320,6 +330,8 @@ def _teacher_menu(c,row,profile,chat,tg,text,out):
     if same(text,LIST):
         _touch(c,tg,'',{},profile['id'])
         _students_message(c,out,chat,profile);return True
+    if same(text,ROSTER_BTN):
+        _send_roster(c,out,chat,profile);return True
     if same(text,ATT):
         _open_attendance(c,tg,chat,profile,out);return True
     return False
@@ -332,6 +344,9 @@ def _register(c,tg,chat,state,draft,text,out):
         if same(text,TEACHER):
             _touch(c,tg,'tch_code',{},None)
             _say(out,chat,'Direktor o‘rinbosari bergan 6 xonali kodni yozing.',CANCEL_KB);return
+        if same(text,DEPUTY2):
+            _touch(c,tg,'dep2_code',{},None)
+            _say(out,chat,'Birinchi direktor o‘rinbosari bergan 6 xonali kodni yozing.',CANCEL_KB);return
         _touch(c,tg,'role',{},None)
         _say(out,chat,'Kim sifatida kirmoqchisiz? Tugmani bosing.',ROLE_KB);return
     if state=='dep_first':
@@ -377,6 +392,8 @@ def _register(c,tg,chat,state,draft,text,out):
         _say(out,chat,'Qaysi sinfga sinf rahbarisiz? Masalan: 7B',CANCEL_KB);return
     if state=='tch_class':
         _create_teacher(c,tg,chat,draft,text,out);return
+    if state=='dep2_code':
+        _join_deputy(c,tg,chat,text,out);return
     _touch(c,tg,'role',{},None)
     _say(out,chat,'Tugmani bosing.',ROLE_KB)
 
@@ -496,6 +513,7 @@ def _student_card(out,chat,student):
         [{'text':'Ism-familiya','callback_data':'sn:'+sid}],
         [{'text':'Jinsi','callback_data':'sg:'+sid}],
         [{'text':'Manzil','callback_data':'sa:'+sid}],
+        [{'text':'Boshqa sinf','callback_data':'sm:'+sid}],
         [{'text':'O‘chirish','callback_data':'del:'+sid}],
         [{'text':'Ro‘yxatga qaytish','callback_data':'ls'}],
     ]
@@ -524,6 +542,114 @@ def _student_edit_text(c,tg,chat,profile,state,draft,text,out):
         student['address']=address
     _touch(c,tg,'',{},profile['id'])
     _student_card(out,chat,student)
+
+def _move_student(c,tg,chat,profile,draft,text,out):
+    student=_own_student(c,profile,draft.get('id'))
+    class_name=normalize_class(text)
+    if not student:
+        _touch(c,tg,'',{},profile['id']);_say(out,chat,'O‘quvchi topilmadi.',TEACHER_KB);return
+    if not class_name:
+        _say(out,chat,'Sinfni 8B ko‘rinishida yozing.',CANCEL_KB);return
+    target=c.execute('SELECT id FROM classes WHERE school_id=? AND name=?',(profile['school_id'],class_name)).fetchone()
+    if not target:
+        _say(out,chat,'Bu sinf topilmadi. Avval yangi sinf rahbari ro‘yxatdan o‘tsin.',CANCEL_KB);return
+    if int(target['id'])==int(profile['class_id']):
+        _say(out,chat,'O‘quvchi shu sinfda.',CANCEL_KB);return
+    c.execute('UPDATE students SET class_id=? WHERE id=? AND class_id=?',(target['id'],student['id'],profile['class_id']))
+    _touch(c,tg,'',{},profile['id'])
+    _say(out,chat,f"{student['name']} {class_name} sinfiga o‘tkazildi. Oldingi davomat saqlanadi.",TEACHER_KB)
+
+def _send_roster(c,out,chat,profile):
+    if not profile.get('class_id'):
+        _say(out,chat,'Avval sinfni kiriting.',TEACHER_KB);return
+    students=[dict(row) for row in c.execute('SELECT name,gender,address FROM students WHERE class_id=? AND active=1 ORDER BY name',(profile['class_id'],))]
+    blob=roster.make_roster_xlsx(profile['class_name'],students)
+    out.append({'pdf':blob,'content_type':XLSX,'chat_id':chat,'text':f"{profile['class_name']} sinf ro‘yxati. Tuzatib, shu yerga qayta yuboring.",'day':server.today().isoformat(),'filename':'Royxat-'+profile['class_name']+'.xlsx'})
+
+def _bind_deputy_chat(c,profile,chat):
+    chat=str(chat)
+    admins=list(c.execute("SELECT id FROM users WHERE school_id=? AND role='admin' AND status='active' ORDER BY id",(profile['school_id'],)))
+    if not admins:return
+    if admins[0]['id']==profile['id']:
+        c.execute('UPDATE schools SET telegram_chat_id=? WHERE id=?',(chat,profile['school_id']))
+    else:
+        c.execute('UPDATE schools SET deputy_chat_2=? WHERE id=?',(chat,profile['school_id']))
+
+def _holiday_message(c,out,chat,profile):
+    from datetime import timedelta
+    school=c.execute('SELECT saturday_off,sunday_off FROM schools WHERE id=?',(profile['school_id'],)).fetchone()
+    today=server.today()
+    upcoming=[]
+    for offset in range(21):
+        current=today+timedelta(days=offset)
+        if not server.is_teaching_day(c,profile['school_id'],current.isoformat()):
+            upcoming.append(current.strftime('%d.%m.%Y'))
+    lines=[
+        'Shanba: '+('dam olish' if school['saturday_off'] else 'o‘quv kuni'),
+        'Yakshanba: '+('dam olish' if school['sunday_off'] else 'o‘quv kuni'),
+        'Yaqin dam kunlari: '+(', '.join(upcoming[:8]) or 'yo‘q'),
+        'Bayram sanasini 08.12.2026 ko‘rinishida yozing. Qayta yozsangiz, o‘quv kuniga aylanadi.',
+    ]
+    buttons=[
+        [{'text':'Shanbani almashtirish','callback_data':'ds:sat'},{'text':'Yakshanbani almashtirish','callback_data':'ds:sun'}],
+        [{'text':'Bugunni dam qilish','callback_data':'ds:today'}],
+    ]
+    out.append({'chat_id':chat,'text':'\n'.join(lines),'reply_markup':{'inline_keyboard':buttons}})
+
+def _mark_holiday_text(c,tg,chat,profile,text,out):
+    parsed=_parse_day(text)
+    if not parsed:
+        _say(out,chat,'Sanani 08.12.2026 ko‘rinishida yozing.',CANCEL_KB);return
+    _toggle_day(c,profile['school_id'],parsed)
+    _touch(c,tg,'adm_off',{},profile['id'])
+    _holiday_message(c,out,chat,profile)
+
+def _parse_day(text):
+    from datetime import date as _date
+    raw=(text or '').strip()
+    match=re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})',raw) or re.fullmatch(r'(\d{1,2})[./](\d{1,2})[./](\d{4})',raw)
+    if not match:return ''
+    parts=[int(item) for item in match.groups()]
+    try:
+        if len(raw)>7 and raw[4]=='-':current=_date(parts[0],parts[1],parts[2])
+        else:current=_date(parts[2],parts[1],parts[0])
+    except ValueError:return ''
+    return current.isoformat()
+
+def _toggle_day(c,school_id,day):
+    teaching=0 if server.is_teaching_day(c,school_id,day) else 1
+    c.execute('INSERT INTO calendar(school_id,day,teaching) VALUES(?,?,?) ON CONFLICT(school_id,day) DO UPDATE SET teaching=excluded.teaching',(school_id,day,teaching))
+
+def _invite_deputy(c,out,chat,profile):
+    admins=list(c.execute("SELECT id,name FROM users WHERE school_id=? AND role='admin' AND status='active' ORDER BY id",(profile['school_id'],)))
+    if len(admins)>1:
+        if admins[0]['id']!=profile['id']:
+            _say(out,chat,'Siz ikkinchi direktor o‘rinbosarisiz. Hisobotlar sizga ham keladi.',DEPUTY_KB);return
+        out.append({'chat_id':chat,'text':f"Ikkinchi o‘rinbosar: {admins[1]['name']}",'reply_markup':{'inline_keyboard':[[{'text':'Olib tashlash','callback_data':'d2x'}]]}})
+        return
+    code=str(secrets.randbelow(900000)+100000)
+    c.execute('UPDATE schools SET deputy_invite=? WHERE id=?',(code,profile['school_id']))
+    _say(out,chat,f"Ikkinchi o‘rinbosar botda «Ikkinchi o‘rinbosar» ni bosib shu kodni yozsin:\n{code}\nKod bir marta ishlaydi.",DEPUTY_KB)
+
+def _join_deputy(c,tg,chat,text,out):
+    code=re.sub(r'\D','',text)
+    school=c.execute('SELECT * FROM schools WHERE deputy_invite=?',(code,)).fetchone() if len(code)==6 else None
+    if not school:
+        _say(out,chat,'Kod topilmadi. Birinchi direktor o‘rinbosaridan yangi kod so‘rang.',CANCEL_KB);return
+    login='tg'+tg
+    existing=c.execute('SELECT id,role,status,school_id FROM users WHERE login=?',(login,)).fetchone()
+    if existing and not (existing['school_id']==school['id'] and existing['role']=='admin'):
+        _say(out,chat,'Bu Telegram boshqa vazifada yozilgan. Boshqa telefondan kiring.',CANCEL_KB);return
+    if existing:
+        user_id=existing['id']
+        c.execute("UPDATE users SET role='admin',status='active' WHERE id=?",(user_id,))
+    else:
+        c.execute("INSERT INTO users(district_id,school_id,login,password,role,name,status) VALUES(?,?,?,?,'admin',?,'active')",(school['district_id'],school['id'],login,server.password_hash(secrets.token_hex(16)),'Ikkinchi o‘rinbosar'))
+        user_id=c.execute('SELECT id FROM users WHERE school_id=? AND login=?',(school['id'],login)).fetchone()['id']
+    c.execute("UPDATE schools SET deputy_chat_2=?,deputy_invite='' WHERE id=?",(str(chat),school['id']))
+    _touch(c,tg,'',{},user_id)
+    profile=_profile(c,{'user_id':user_id})
+    _say(out,chat,'Ikkinchi direktor o‘rinbosari sifatida kirdingiz. Hisobotlar sizga ham keladi.\n'+_deputy_text(profile),DEPUTY_KB)
 
 def _school_teacher(c,profile,uid):
     if not str(uid).isdigit():return None
@@ -614,6 +740,9 @@ def _student_callback(c,tg,chat,profile,data,out):
         out[0]['toast']='O‘quvchi topilmadi';return
     if kind=='ed':
         _student_card(out,chat,student);return
+    if kind=='sm':
+        _touch(c,tg,'stu_move',{'id':student['id']},profile['id'])
+        _say(out,chat,f"{student['name']} qaysi sinfga o‘tadi? Masalan: 8B",CANCEL_KB);return
     if kind=='sg':
         out.append({'chat_id':chat,'text':student['name']+'\nJinsini tanlang.','reply_markup':{'inline_keyboard':[[{'text':BOY,'callback_data':'sj:'+sid+':M'},{'text':GIRL,'callback_data':'sj:'+sid+':F'}]]}})
         return
@@ -652,6 +781,8 @@ def _admin_teacher_callback(c,tg,chat,profile,data,out):
 def _open_attendance(c,tg,chat,profile,out):
     if not profile.get('class_id'):
         _say(out,chat,'Avval sinfni kiriting.',TEACHER_KB);return
+    if not server.is_teaching_day(c,profile['school_id'],server.today().isoformat()):
+        _say(out,chat,'Bugun dam olish kuni. Davomat so‘ralmaydi.',TEACHER_KB);return
     pupils=list(c.execute('SELECT * FROM students WHERE class_id=? AND active=1 ORDER BY name',(profile['class_id'],)))
     if not pupils:
         _say(out,chat,'Avval o‘quvchilarni kiriting.',TEACHER_KB);return
@@ -709,7 +840,11 @@ def _send_span(c,out,profile,chat,scope,period,offer_previous=False):
         _say(out,chat,'Bu davrda hali davomat yo‘q.',DEPUTY_KB);return
     blob=make_summary_xlsx(rows,key,info,scope=scope)
     text=caption+' | '+str(sum(1 for row in rows if row.get('submitted')))+' ta sinf-kun'
-    out.append({'pdf':blob,'content_type':XLSX,'chat_id':school['telegram_chat_id'],'notify_chat':chat,'text':text[:1000],'day':key,'filename':filename})
+    _send_school_file(out,school,blob,filename,text,key,chat)
+    if scope=='month':
+        people=server.chronic_students(rows)
+        chronic=make_chronic_xlsx(people,key,info)
+        _send_school_file(out,school,chronic,'Surunkali-'+school['code']+'-'+key+'.xlsx',caption+' | 3 kundan ko‘p kelmaganlar',key,chat)
 
 def _on_callback(c,row,chat,tg,data,out):
     profile=_profile(c,row)
@@ -733,8 +868,12 @@ def _on_callback(c,row,chat,tg,data,out):
     if profile['role']=='teacher' and data=='ls':
         _touch(c,tg,'',{},profile['id'])
         _students_message(c,out,chat,profile);return
-    if profile['role']=='teacher' and data.startswith(('ed:','sn:','sg:','sa:','sj:')):
+    if profile['role']=='teacher' and data.startswith(('ed:','sn:','sg:','sa:','sj:','sm:')):
         _student_callback(c,tg,chat,profile,data,out);return
+    if profile['role']=='admin' and data=='d2x':
+        _remove_second_deputy(c,out,chat,profile);return
+    if profile['role']=='admin' and data.startswith('ds:'):
+        _holiday_callback(c,tg,chat,profile,data,out);return
     state=row['state'] or ''
     draft=_draft(row)
     if data in ('g:M','g:F') and state=='stu_gender' and profile['role']=='teacher':
@@ -775,6 +914,8 @@ def _submit(c,tg,chat,profile,pupils,marks,out):
     if not pupils:
         _say(out,chat,'Avval o‘quvchilarni kiriting.',TEACHER_KB);return
     day=server.today().isoformat()
+    if not server.is_teaching_day(c,profile['school_id'],day):
+        _say(out,chat,'Bugun dam olish kuni. Davomat so‘ralmaydi.',TEACHER_KB);return
     saved=[];absent=0
     for pupil in pupils:
         status=int(marks.get(str(pupil['id']),0) or 0)
@@ -794,8 +935,7 @@ def _submit(c,tg,chat,profile,pupils,marks,out):
     c.execute('INSERT INTO reports(school_id,day,class_id,revision,payload,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(day,class_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,updated=excluded.updated,school_id=excluded.school_id',(profile['school_id'],day,profile['class_id'],revision,payload,time.time()))
     c.execute('INSERT INTO audit(day,class_id,user_id,payload,created) VALUES(?,?,?,?,?)',(day,profile['class_id'],profile['id'],payload,time.time()))
     _touch(c,tg,'',{},profile['id'])
-    _say(out,chat,f"Davomat saqlandi. Kelmagan: {absent} ta, jami: {len(pupils)} ta.",TEACHER_KB)
-    _send_compiled(c,out,profile,chat,f"{profile['school_name']} | {profile['class_name']} | {profile['name']} | kelmagan {absent}/{len(pupils)}")
+    _say(out,chat,f"Davomat saqlandi. Kelmagan: {absent} ta, jami: {len(pupils)} ta.\nJamlanma soat 11:00 da direktor o‘rinbosariga yuboriladi.",TEACHER_KB)
 
 def _status_text(c,profile):
     day=server.today().isoformat()
@@ -818,8 +958,37 @@ def _send_compiled(c,out,profile,notify_chat,caption):
     day=server.today().isoformat()
     blob=make_summary_xlsx(rows,day,server.school_settings(c,profile['school_id']))
     submitted=sum(1 for row in rows if row['submitted'])
+    missing=[row['class'] for row in rows if not row.get('submitted')]
     text=caption+' | 1-jadval '+str(submitted)+'/'+str(len(rows))+' sinf'
-    out.append({'pdf':blob,'content_type':XLSX,'chat_id':school['telegram_chat_id'],'notify_chat':notify_chat,'text':text[:1000],'day':day,'filename':'Davomat-'+school['code']+'-'+day+'.xlsx'})
+    if missing:text+=' | jo‘natmagan: '+', '.join(missing)
+    _send_school_file(out,school,blob,'Davomat-'+school['code']+'-'+day+'.xlsx',text,day,notify_chat)
+
+def _send_school_file(out,school,blob,filename,text,day,notify_chat):
+    chats=server.deputy_chats(school)
+    if not chats:
+        _say(out,notify_chat,'Direktor o‘rinbosari chati yo‘q.');return
+    for chat_id in chats:
+        out.append({'pdf':blob,'content_type':XLSX,'chat_id':chat_id,'notify_chat':notify_chat,'text':text[:1000],'day':day,'filename':filename})
+
+def _holiday_callback(c,tg,chat,profile,data,out):
+    action=data.split(':',1)[1]
+    if action=='sat':
+        c.execute('UPDATE schools SET saturday_off=CASE saturday_off WHEN 1 THEN 0 ELSE 1 END WHERE id=?',(profile['school_id'],))
+    elif action=='sun':
+        c.execute('UPDATE schools SET sunday_off=CASE sunday_off WHEN 1 THEN 0 ELSE 1 END WHERE id=?',(profile['school_id'],))
+    elif action=='today':
+        _toggle_day(c,profile['school_id'],server.today().isoformat())
+    _touch(c,tg,'adm_off',{},profile['id'])
+    _holiday_message(c,out,chat,profile)
+
+def _remove_second_deputy(c,out,chat,profile):
+    admins=list(c.execute("SELECT id FROM users WHERE school_id=? AND role='admin' AND status='active' ORDER BY id",(profile['school_id'],)))
+    if len(admins)<2 or admins[0]['id']!=profile['id']:
+        out[0]['toast']='Ruxsat yo‘q';return
+    c.execute("UPDATE users SET status='removed' WHERE id=? AND school_id=?",(admins[1]['id'],profile['school_id']))
+    c.execute("UPDATE schools SET deputy_chat_2='',deputy_invite='' WHERE id=?",(profile['school_id'],))
+    out[0]['toast']='Olib tashlandi'
+    _say(out,chat,'Ikkinchi direktor o‘rinbosari olib tashlandi.',DEPUTY_KB)
 
 def poll():
     server.init()

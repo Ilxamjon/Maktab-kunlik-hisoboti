@@ -19,6 +19,8 @@ def _boot_telegram():
     try:bot.ensure_webhook()
     except Exception:LOG.exception('Telegram webhook ulanmadi')
 _boot_telegram()
+if os.getenv('TELEGRAM_SET_WEBHOOK')=='1':
+    threading.Thread(target=server.worker,daemon=True).start()
 
 def _client_ip(environ):
     """Trust nginx's real IP only when Waitress is reached through loopback."""
@@ -73,9 +75,9 @@ def application(environ,start_response):
         elif path=='/cron/noon':
             expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
             if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)
-            queued=server.maybe_noon_digests();processed=0
+            result=server.run_due_jobs();processed=0
             while processed<100 and server.process_one():processed+=1
-            result={'ok':True,'queued':queued,'processed':processed}
+            result['ok']=True;result['processed']=processed
         else:result=server.dispatch(method,path+('?' +query if query else ''),data,token)
         if login_key:_clear_login_failures(login_key)
         if isinstance(result,server.HtmlPage):

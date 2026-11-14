@@ -3,7 +3,8 @@ from contextlib import contextmanager
 import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re, logging
 import database
 from datetime import date, datetime, timedelta, timezone
-from catalog import REASONS, COLUMN_ORDER
+from calendar import monthrange
+from catalog import REASONS, COLUMN_ORDER, EXCEL_LABELS
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs, urlencode
@@ -291,6 +292,16 @@ def migrate_v8(c):
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS schools_join_code ON schools(join_code) WHERE join_code<>''")
     c.execute('PRAGMA user_version=8')
 
+def migrate_v9(c):
+    version=c.execute('PRAGMA user_version').fetchone()[0]
+    if version>=9:return
+    cols=_columns(c,'schools')
+    if 'saturday_off' not in cols:c.execute('ALTER TABLE schools ADD COLUMN saturday_off INTEGER NOT NULL DEFAULT 0')
+    if 'sunday_off' not in cols:c.execute('ALTER TABLE schools ADD COLUMN sunday_off INTEGER NOT NULL DEFAULT 0')
+    if 'deputy_chat_2' not in cols:c.execute("ALTER TABLE schools ADD COLUMN deputy_chat_2 TEXT NOT NULL DEFAULT ''")
+    if 'deputy_invite' not in cols:c.execute("ALTER TABLE schools ADD COLUMN deputy_invite TEXT NOT NULL DEFAULT ''")
+    c.execute('PRAGMA user_version=9')
+
 def init():
     if database.is_postgres():
         schema=(ROOT/'schema_postgres.sql').read_text(encoding='utf-8')
@@ -315,7 +326,7 @@ def init():
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,day TEXT,class_id INTEGER,user_id INTEGER,payload TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS outbox(id INTEGER PRIMARY KEY,day TEXT,fingerprint TEXT UNIQUE,pdf BLOB,state TEXT DEFAULT 'pending',attempts INTEGER DEFAULT 0,next_try REAL DEFAULT 0);
         ''')
-        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c);migrate_v8(c)
+        migrate_v2(c);migrate_v3(c);migrate_v4(c);migrate_v5(c);migrate_v6(c);migrate_v7(c);migrate_v8(c);migrate_v9(c)
 
 def org_code_value(raw):
     s=(raw or '').strip().upper().replace(' ','')
@@ -334,8 +345,45 @@ def school_settings(c,school_id):
 
 def telegram_for(school):
     token=school.get('telegram_bot_token') or os.getenv('TELEGRAM_BOT_TOKEN') or ''
-    chat=school.get('telegram_chat_id') or os.getenv('TELEGRAM_CHAT_ID') or ''
-    return token,chat
+    chats=deputy_chats(school)
+    return token,chats[0] if chats else ''
+
+def deputy_chats(school):
+    school=dict(school) if school is not None and not isinstance(school,dict) else (school or {})
+    found=[]
+    for key in ('telegram_chat_id','deputy_chat_2'):
+        value=str(school.get(key) or '').strip()
+        if value and value not in found:found.append(value)
+    if not found:
+        env=(os.getenv('TELEGRAM_CHAT_ID') or '').strip()
+        if env:found.append(env)
+    return found
+
+def is_teaching_day(c,school_id,day):
+    row=c.execute('SELECT teaching FROM calendar WHERE school_id=? AND day=?',(school_id,day)).fetchone()
+    if row is not None:return bool(row['teaching'])
+    school=school_row(c,school_id)
+    weekday=date.fromisoformat(day).weekday()
+    if weekday==5 and school.get('saturday_off'):return False
+    if weekday==6 and school.get('sunday_off'):return False
+    return True
+
+def chronic_students(rows,limit=3):
+    found={}
+    for row in rows:
+        if not row.get('submitted'):continue
+        for entry in row.get('entries') or []:
+            status=int(entry.get('status') or 0)
+            if status<=0 or status>=len(EXCEL_LABELS):continue
+            item=found.setdefault(entry.get('id'),{'name':entry.get('name') or '','class':row.get('class') or '','days':0,'reasons':{}})
+            item['days']+=1
+            item['name']=entry.get('name') or item['name']
+            item['class']=row.get('class') or item['class']
+            label=EXCEL_LABELS[status]
+            item['reasons'][label]=item['reasons'].get(label,0)+1
+    result=[item for item in found.values() if item['days']>limit]
+    result.sort(key=lambda item:(-item['days'],item['class'],item['name']))
+    return result
 
 def telegram_api(token,method,params=None):
     if not token or not re.fullmatch(r'[0-9]{5,15}:[A-Za-z0-9_-]{20,80}',token):raise ApiError('Telegram Bot token noto‘g‘ri')
@@ -362,7 +410,7 @@ def monthly_summary(c,month,school_id):
     days=[r[0] for r in c.execute('SELECT day FROM calendar WHERE school_id=? AND day LIKE ? AND teaching=1 ORDER BY day',(school_id,month+'-%'))]
     configured=c.execute('SELECT count(*) FROM calendar WHERE school_id=? AND day LIKE ?',(school_id,month+'-%')).fetchone()[0]>0
     reported=[r[0] for r in c.execute('SELECT DISTINCT day FROM reports WHERE school_id=? AND day LIKE ? ORDER BY day',(school_id,month+'-%'))]
-    all_days=sorted(set(days+reported)); result=[]
+    all_days=[day for day in sorted(set(days+reported)) if is_teaching_day(c,school_id,day)]; result=[]
     for day in all_days:result.extend(summary(c,day,school_id))
     return {'rows':result,'month':month,'calendar_configured':configured,'teaching_days':days,'report_dates':reported}
 
@@ -524,11 +572,12 @@ def range_summary(c,school_id,start,end):
     configured=c.execute('SELECT count(*) FROM calendar WHERE school_id=? AND day>=? AND day<=?',(school_id,start,end)).fetchone()[0]>0
     teaching=[r[0] for r in c.execute('SELECT day FROM calendar WHERE school_id=? AND day>=? AND day<=? AND teaching=1 ORDER BY day',(school_id,start,end))] if configured else []
     rows=[]
-    for day in sorted(set(reported)|set(teaching)):rows.extend(summary(c,day,school_id))
+    for day in sorted(set(reported)|set(teaching)):
+        if is_teaching_day(c,school_id,day):rows.extend(summary(c,day,school_id))
     return rows
 
 from reports import make_pdf
-from excel_report import make_summary_xlsx, XLSX
+from excel_report import make_summary_xlsx, make_chronic_xlsx, XLSX
 
 def enqueue(c,day,require_complete,school_id,kind='manual'):
     rows=summary(c,day,school_id)
@@ -537,6 +586,11 @@ def enqueue(c,day,require_complete,school_id,kind='manual'):
     key=hashlib.sha256(json.dumps([kind,school_id,day,rows,info],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     c.execute("UPDATE outbox SET state='superseded' WHERE school_id=? AND day=? AND kind=? AND state='pending' AND fingerprint<>?",(school_id,day,kind,key))
     c.execute('INSERT OR IGNORE INTO outbox(school_id,day,kind,fingerprint,pdf) VALUES(?,?,?,?,?)',(school_id,day,kind,key,make_summary_xlsx(rows,day,info)))
+
+def queue_blob(c,school_id,day,kind,blob,source):
+    key=hashlib.sha256(json.dumps([kind,school_id,day,source],sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()
+    c.execute("UPDATE outbox SET state='superseded' WHERE school_id=? AND day=? AND kind=? AND state='pending' AND fingerprint<>?",(school_id,day,kind,key))
+    c.execute('INSERT OR IGNORE INTO outbox(school_id,day,kind,fingerprint,pdf) VALUES(?,?,?,?,?)',(school_id,day,kind,key,blob))
 
 def code_taken(c,code,ignore_school=None,ignore_district=None):
     school=c.execute('SELECT id FROM schools WHERE code=?',(code,)).fetchone()
@@ -683,8 +737,7 @@ def dispatch(method,path,data,token=''):
                 c.execute('BEGIN IMMEDIATE')
                 old=c.execute('SELECT * FROM reports WHERE school_id=? AND day=? AND class_id=?',(sid,day,cid)).fetchone()
                 if old and old['locked']:raise ApiError('Hisobot tasdiqlangan. Direktor qayta ochishi kerak.',409)
-                cal=c.execute('SELECT teaching FROM calendar WHERE school_id=? AND day=?',(sid,day)).fetchone()
-                if cal and not cal['teaching']:raise ApiError('Bu sana taqvimda dam olish kuni')
+                if not is_teaching_day(c,sid,day):raise ApiError('Bu sana dam olish kuni')
                 rev=old['revision'] if old else 0
                 if data.get('revision')!=rev:raise ApiError('Hisobot boshqa qurilmada yangilangan. Qayta oching.',409)
                 entries=data.get('entries')
@@ -821,6 +874,14 @@ def dispatch(method,path,data,token=''):
             enqueue(c,day,False,sid,'manual');return {'ok':True,'message':'Navbatga qo‘yildi. Yetkazilish holatini tekshiring.'}
         raise ApiError('Manzil topilmadi',404)
 
+def send_message(chat,text,token=None):
+    token=token or os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token or not chat:raise RuntimeError('Telegram sozlanmagan')
+    body=json.dumps({'chat_id':str(chat),'text':str(text)[:4096]},ensure_ascii=False).encode()
+    req=Request('https://api.telegram.org/bot'+token+'/sendMessage',data=body,headers={'Content-Type':'application/json'})
+    with urlopen(req,timeout=20) as response:result=json.load(response)
+    if not result.get('ok'):raise RuntimeError('Telegram xabarini qabul qilmadi')
+
 def send_document(blob,day,token=None,chat=None,caption=None,filename=None,content_type=None):
     token=token or os.getenv('TELEGRAM_BOT_TOKEN');chat=chat or os.getenv('TELEGRAM_CHAT_ID')
     if not token or not chat:raise RuntimeError('Telegram sozlanmagan')
@@ -835,23 +896,71 @@ def send_document(blob,day,token=None,chat=None,caption=None,filename=None,conte
     with urlopen(req,timeout=40) as response:result=json.load(response)
     if not result.get('ok'):raise RuntimeError('Telegram faylni qabul qilmadi')
 
+def _mark_digest(c,school_id,day,kind):
+    if c.execute('SELECT 1 FROM digests WHERE school_id=? AND day=? AND kind=?',(school_id,day,kind)).fetchone():return False
+    c.execute('INSERT INTO digests(school_id,day,kind,created) VALUES(?,?,?,?)',(school_id,day,kind,time.time()))
+    return True
+
+def maybe_reminders(now=None):
+    now=now or now_uz()
+    if now.hour<9 or (now.hour==9 and now.minute<30):return 0
+    day=now.date().isoformat();sent=0
+    with connect() as c:schools=list(c.execute('SELECT id FROM schools'))
+    for school in schools:
+        with connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if not _mark_digest(c,school['id'],day,'remind'):continue
+            if not is_teaching_day(c,school['id'],day):continue
+            targets=list(c.execute('''SELECT b.telegram_id,cl.name AS class_name FROM classes cl
+                JOIN users u ON u.id=cl.teacher AND u.status='active'
+                JOIN bot_chats b ON b.user_id=u.id
+                LEFT JOIN reports r ON r.school_id=cl.school_id AND r.class_id=cl.id AND r.day=?
+                WHERE cl.school_id=? AND r.day IS NULL''',(day,school['id'])))
+        for target in targets:
+            try:
+                send_message(target['telegram_id'],f"{target['class_name']} sinf. Bugungi davomat hali yo‘q.")
+                sent+=1
+            except Exception:LOG.exception('Davomat eslatmasi yuborilmadi')
+    return sent
+
 def maybe_noon_digests(now=None):
     now=now or now_uz()
-    if now.hour<12:return 0
+    if now.hour<11:return 0
     day=now.date().isoformat();queued=0
     with connect() as c:schools=list(c.execute('SELECT * FROM schools'))
     for school in schools:
         with connect() as c:
             c.execute('BEGIN IMMEDIATE')
-            if c.execute("SELECT 1 FROM digests WHERE school_id=? AND day=? AND kind='noon'",(school['id'],day)).fetchone():continue
-            cal=c.execute('SELECT teaching FROM calendar WHERE school_id=? AND day=?',(school['id'],day)).fetchone()
-            if cal and not cal['teaching']:
-                c.execute("INSERT INTO digests(school_id,day,kind,created) VALUES(?,?,?,?)",(school['id'],day,'noon',time.time()));continue
+            if not _mark_digest(c,school['id'],day,'noon'):continue
+            if not is_teaching_day(c,school['id'],day):continue
             if not c.execute('SELECT 1 FROM classes WHERE school_id=?',(school['id'],)).fetchone():continue
             enqueue(c,day,False,school['id'],'noon')
-            c.execute("INSERT INTO digests(school_id,day,kind,created) VALUES(?,?,?,?)",(school['id'],day,'noon',time.time()))
             queued+=1
     return queued
+
+def maybe_chronic_digests(now=None):
+    now=now or now_uz()
+    months=[]
+    if now.day<=5:
+        months.append((now.date().replace(day=1)-timedelta(days=1)).strftime('%Y-%m'))
+    if now.day==monthrange(now.year,now.month)[1] and now.hour>=18:months.append(now.strftime('%Y-%m'))
+    queued=0
+    with connect() as c:schools=list(c.execute('SELECT * FROM schools'))
+    for month in months:
+        for school in schools:
+            with connect() as c:
+                c.execute('BEGIN IMMEDIATE')
+                if not _mark_digest(c,school['id'],month,'chronic'):continue
+                report=monthly_summary(c,month,school['id'])
+                if not any(row.get('submitted') for row in report['rows']):continue
+                people=chronic_students(report['rows'])
+                queue_blob(c,school['id'],month,'chronic',make_chronic_xlsx(people,month,school_settings(c,school['id'])),people)
+                queued+=1
+    return queued
+
+def run_due_jobs(now=None):
+    now=now or now_uz()
+    return {'reminders':maybe_reminders(now),'queued':maybe_noon_digests(now),'chronic':maybe_chronic_digests(now)}
 
 def process_one():
     with connect() as c:
@@ -862,26 +971,31 @@ def process_one():
     if not row:return False
     school=None
     with connect() as c:school=school_row(c,row['school_id'])
-    token,chat=telegram_for(school)
-    if not token or not chat:
+    token,_chat=telegram_for(school)
+    chats=deputy_chats(school)
+    if not token or not chats:
         with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+300,row['id']))
         return False
     legacy_pdf=bytes(row['pdf'][:5])==b'%PDF-'
-    kind_label={'monthly':'Oylik hisobot','yearly':'Yillik hisobot'}.get(row['kind'],'Kunlik jadval')
+    kind_label={'monthly':'Oylik hisobot','yearly':'Yillik hisobot','chronic':'Surunkali kelmaganlar'}.get(row['kind'],'Kunlik jadval')
     caption=school['name']+' | '+row['day']+' | '+kind_label
-    filename='Davomat-'+school['code']+'-'+row['day']+('.pdf' if legacy_pdf else '.xlsx')
-    try:send_document(row['pdf'],row['day'],token,chat,caption,filename,'application/pdf' if legacy_pdf else XLSX)
-    except Exception:
-        LOG.exception('Telegram document delivery failed (outbox=%s, school=%s)',row['id'],row['school_id'])
-        with connect() as c:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
-    else:
-        with connect() as c:
-            c.execute('DELETE FROM outbox WHERE id=?',(row['id'],))
-    return True
+    prefix='Surunkali-' if row['kind']=='chronic' else 'Davomat-'
+    filename=prefix+school['code']+'-'+row['day']+('.pdf' if legacy_pdf else '.xlsx')
+    content='application/pdf' if legacy_pdf else XLSX
+    failed=False
+    for chat in chats:
+        try:send_document(row['pdf'],row['day'],token,chat,caption,filename,content)
+        except Exception:
+            LOG.exception('Telegram document delivery failed (outbox=%s, school=%s, chat=%s)',row['id'],row['school_id'],chat)
+            failed=True
+    with connect() as c:
+        if failed:c.execute("UPDATE outbox SET state='pending',attempts=attempts+1,next_try=? WHERE id=?",(time.time()+min(3600,30*2**min(row['attempts'],7)),row['id']))
+        else:c.execute('DELETE FROM outbox WHERE id=?',(row['id'],))
+    return not failed
 
 def worker():
     while True:
-        try:maybe_noon_digests();process_one()
+        try:run_due_jobs();process_one()
         except Exception:LOG.exception('Background worker iteration failed')
         time.sleep(5)
 
