@@ -16,13 +16,14 @@ PDF_BTN='Bugungi jadval'
 MONTH_BTN='Oylik hisobot'
 YEAR_BTN='Yillik hisobot'
 STATUS='Sinflar holati'
+STAFF='Sinf rahbarlari'
 CODE_BTN='Maktab kodi'
 CANCEL='Bekor qilish'
 DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,ADD,LIST,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,ADD,LIST,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,CODE_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
     text=(value or '').strip().lower()
@@ -42,7 +43,7 @@ def keyboard(*rows):
 
 ROLE_KB=keyboard([DEPUTY],[TEACHER])
 TEACHER_KB=keyboard([ADD],[LIST,ATT])
-DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STATUS,CODE_BTN])
+DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[CODE_BTN])
 CANCEL_KB=keyboard([CANCEL])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
@@ -218,12 +219,13 @@ def _touch(c,tg,state,draft,user_id):
 
 def _profile(c,row):
     if not row or not row['user_id']:return None
-    found=c.execute('''SELECT u.id,u.role,u.name,u.school_id,s.name AS school_name,s.join_code,s.code AS school_code,s.telegram_chat_id,
+    found=c.execute('''SELECT u.id,u.role,u.name,u.status,u.school_id,s.name AS school_name,s.join_code,s.code AS school_code,s.telegram_chat_id,
         cl.id AS class_id,cl.name AS class_name
         FROM users u JOIN schools s ON s.id=u.school_id
         LEFT JOIN classes cl ON cl.teacher=u.id AND cl.school_id=u.school_id
         WHERE u.id=?''',(row['user_id'],)).fetchone()
-    return dict(found) if found else None
+    if not found or found['status']!='active':return None
+    return dict(found)
 
 def _say(out,chat,text,markup=None):
     item={'chat_id':chat,'text':text}
@@ -253,10 +255,10 @@ def _home(c,tg,chat,out,profile):
         _say(out,chat,_deputy_text(profile),DEPUTY_KB)
     else:
         count=c.execute('SELECT count(*) FROM students WHERE class_id=? AND active=1',(profile['class_id'],)).fetchone()[0]
-        _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\nRo‘yxatni .xlsx fayl qilib shu yerga yuborishingiz mumkin.",TEACHER_KB)
+        _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\n«O‘quvchilar»dan ism, jins va manzilni tahrirlaysiz. Ro‘yxatni .xlsx fayl qilib ham yuborishingiz mumkin.",TEACHER_KB)
 
 def _deputy_text(profile):
-    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi. Oylik va yillik hisobotni shu yerdan yuklab olasiz."
+    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi."
 
 def _on_text(c,row,chat,tg,text,out):
     profile=_profile(c,row)
@@ -275,11 +277,18 @@ def _on_text(c,row,chat,tg,text,out):
         _ask_month(out,chat);return
     if profile and profile['role']=='admin' and (cmd=='/yil' or same(text,YEAR_BTN)):
         _send_span(c,out,profile,chat,'year',str(server.school_year_start()),offer_previous=True);return
+    if profile and profile['role']=='admin' and (cmd=='/rahbarlar' or same(text,STAFF)):
+        _touch(c,tg,'',{},profile['id'])
+        _staff_message(c,out,chat,profile);return
     if profile and _teacher_menu(c,row,profile,chat,tg,text,out):return
     state=row['state'] or ''
     draft=_draft(row)
     if not profile:
         _register(c,tg,chat,state,draft,text,out);return
+    if profile['role']=='admin' and state in ('adm_name','adm_class'):
+        _admin_edit_text(c,tg,chat,profile,state,draft,text,out);return
+    if profile['role']=='teacher' and state in ('stu_rename','stu_addr'):
+        _student_edit_text(c,tg,chat,profile,state,draft,text,out);return
     if state=='fix_class':
         _bind_class(c,tg,chat,profile,text,out);return
     if state=='stu_name':
@@ -309,6 +318,7 @@ def _teacher_menu(c,row,profile,chat,tg,text,out):
         _touch(c,tg,'stu_name',{},profile['id'])
         _say(out,chat,'O‘quvchining familiyasi va ismini yozing.\nTugatganda «Tayyor» ni bosing.',WIZARD_KB);return True
     if same(text,LIST):
+        _touch(c,tg,'',{},profile['id'])
         _students_message(c,out,chat,profile);return True
     if same(text,ATT):
         _open_attendance(c,tg,chat,profile,out);return True
@@ -457,13 +467,187 @@ def _save_student(c,tg,chat,profile,draft,address,out):
     _touch(c,tg,'stu_name',{},profile['id'])
     _say(out,chat,f"Qo‘shildi: {name}\nKeyingi o‘quvchini yozing yoki «Tayyor» ni bosing.",WIZARD_KB)
 
+def _gender_word(gender):
+    if gender=='M':return 'o‘g‘il'
+    if gender=='F':return 'qiz'
+    return '—'
+
+def _own_student(c,profile,sid):
+    if not str(sid).isdigit() or not profile.get('class_id'):return None
+    row=c.execute('SELECT * FROM students WHERE id=? AND class_id=? AND active=1',(int(sid),profile['class_id'])).fetchone()
+    return dict(row) if row else None
+
 def _students_message(c,out,chat,profile):
-    rows=list(c.execute('SELECT id,name,gender FROM students WHERE class_id=? AND active=1 ORDER BY name',(profile['class_id'],)))
+    rows=list(c.execute('SELECT id,name,gender,address FROM students WHERE class_id=? AND active=1 ORDER BY name',(profile['class_id'],)))
     if not rows:
         _say(out,chat,'Hali o‘quvchi yo‘q. «O‘quvchi qo‘shish» ni bosing yoki .xlsx ro‘yxat yuboring.',TEACHER_KB);return
-    lines=[f"{index}. {row['name']} ({'o‘g‘il' if row['gender']=='M' else 'qiz'})" for index,row in enumerate(rows,1)]
-    buttons=[[{'text':'O‘chirish: '+row['name'][:40],'callback_data':'del:'+str(row['id'])}] for row in rows]
-    out.append({'chat_id':chat,'text':'O‘quvchilar:\n'+'\n'.join(lines),'reply_markup':{'inline_keyboard':buttons}})
+    lines=[]
+    buttons=[]
+    for index,row in enumerate(rows,1):
+        place=row['address'] or 'manzil yo‘q'
+        lines.append(f"{index}. {row['name']} — {_gender_word(row['gender'])} — {place}")
+        buttons.append([{'text':'Tahrirlash: '+row['name'][:40],'callback_data':'ed:'+str(row['id'])}])
+    out.append({'chat_id':chat,'text':'O‘quvchini tanlang:\n'+'\n'.join(lines),'reply_markup':{'inline_keyboard':buttons}})
+
+def _student_card(out,chat,student):
+    text=f"{student['name']}\nJinsi: {_gender_word(student['gender'])}\nManzil: {student['address'] or '—'}"
+    sid=str(student['id'])
+    buttons=[
+        [{'text':'Ism-familiya','callback_data':'sn:'+sid}],
+        [{'text':'Jinsi','callback_data':'sg:'+sid}],
+        [{'text':'Manzil','callback_data':'sa:'+sid}],
+        [{'text':'O‘chirish','callback_data':'del:'+sid}],
+        [{'text':'Ro‘yxatga qaytish','callback_data':'ls'}],
+    ]
+    out.append({'chat_id':chat,'text':text,'reply_markup':{'inline_keyboard':buttons}})
+
+def _student_edit_text(c,tg,chat,profile,state,draft,text,out):
+    student=_own_student(c,profile,draft.get('id'))
+    if not student:
+        _touch(c,tg,'',{},profile['id'])
+        _say(out,chat,'O‘quvchi topilmadi.',TEACHER_KB);return
+    if state=='stu_rename':
+        name=clean_name(text)
+        if not name:
+            _say(out,chat,'Familiya va ismni yozing. Masalan: Karimov Jasur',CANCEL_KB);return
+        key=roster.name_key(name)
+        duplicate=any(roster.name_key(row['name'])==key for row in c.execute('SELECT id,name FROM students WHERE class_id=? AND active=1 AND id<>?',(profile['class_id'],student['id'])))
+        if duplicate:
+            _say(out,chat,'Bu ism sinfda bor. Boshqa ism yozing.',CANCEL_KB);return
+        c.execute('UPDATE students SET name=? WHERE id=? AND class_id=?',(name,student['id'],profile['class_id']))
+        student['name']=name
+    else:
+        address='' if same(text,SKIP) or text.strip() in ('-','—') else text.strip()
+        if len(address)>300:
+            _say(out,chat,'Manzil juda uzun. Qisqaroq yozing.',ADDRESS_KB);return
+        c.execute('UPDATE students SET address=? WHERE id=? AND class_id=?',(address,student['id'],profile['class_id']))
+        student['address']=address
+    _touch(c,tg,'',{},profile['id'])
+    _student_card(out,chat,student)
+
+def _school_teacher(c,profile,uid):
+    if not str(uid).isdigit():return None
+    row=c.execute('''SELECT u.id,u.name,cl.id AS class_id,cl.name AS class_name
+        FROM users u LEFT JOIN classes cl ON cl.teacher=u.id AND cl.school_id=u.school_id
+        WHERE u.id=? AND u.school_id=? AND u.role='teacher' AND u.status='active' ''',(int(uid),profile['school_id'])).fetchone()
+    return dict(row) if row else None
+
+def _staff_message(c,out,chat,profile):
+    rows=list(c.execute('''SELECT u.id,u.name,cl.name AS class_name
+        FROM users u LEFT JOIN classes cl ON cl.teacher=u.id AND cl.school_id=u.school_id
+        WHERE u.school_id=? AND u.role='teacher' AND u.status='active'
+        ORDER BY cl.name,u.name''',(profile['school_id'],)))
+    if not rows:
+        _say(out,chat,'Hali sinf rahbari yo‘q. O‘qituvchilar kodini yuboring.',DEPUTY_KB);return
+    lines=[];buttons=[]
+    for index,row in enumerate(rows,1):
+        label=f"{row['class_name'] or '—'} — {row['name']}"
+        lines.append(f"{index}. {label}")
+        buttons.append([{'text':label[:40],'callback_data':'tc:'+str(row['id'])}])
+    out.append({'chat_id':chat,'text':'Sinf rahbarini tanlang:\n'+'\n'.join(lines),'reply_markup':{'inline_keyboard':buttons}})
+
+def _teacher_card(out,chat,teacher,note=''):
+    text=f"{teacher['name']}\nSinf: {teacher['class_name'] or '—'}"
+    if note:text+='\n'+note
+    uid=str(teacher['id'])
+    buttons=[
+        [{'text':'Ism-familiya','callback_data':'tn:'+uid}],
+        [{'text':'Sinf','callback_data':'tk:'+uid}],
+        [{'text':'Olib tashlash','callback_data':'tx:'+uid}],
+        [{'text':'Ro‘yxatga qaytish','callback_data':'tl'}],
+    ]
+    out.append({'chat_id':chat,'text':text,'reply_markup':{'inline_keyboard':buttons}})
+
+def _admin_edit_text(c,tg,chat,profile,state,draft,text,out):
+    teacher=_school_teacher(c,profile,draft.get('id'))
+    if not teacher:
+        _touch(c,tg,'',{},profile['id'])
+        _say(out,chat,'Sinf rahbari topilmadi.',DEPUTY_KB);return
+    if state=='adm_name':
+        name=clean_name(text)
+        if not name:
+            _say(out,chat,'Familiya va ismni yozing. Masalan: Karimova Dilnoza',CANCEL_KB);return
+        c.execute("UPDATE users SET name=? WHERE id=? AND school_id=? AND role='teacher' AND status='active'",(name,teacher['id'],profile['school_id']))
+        teacher['name']=name
+    else:
+        class_name=normalize_class(text)
+        if not class_name:
+            _say(out,chat,'Sinfni 7B ko‘rinishida yozing.',CANCEL_KB);return
+        if teacher['class_name']!=class_name:
+            target=c.execute('SELECT id,teacher FROM classes WHERE school_id=? AND name=?',(profile['school_id'],class_name)).fetchone()
+            if target and target['teacher'] and int(target['teacher'])!=int(teacher['id']):
+                _say(out,chat,'Bu sinfning sinf rahbari allaqachon bor.',CANCEL_KB);return
+            note=''
+            if target:
+                if teacher['class_id']:
+                    left=c.execute('SELECT count(*) FROM students WHERE class_id=? AND active=1',(teacher['class_id'],)).fetchone()[0]
+                    if left:note='O‘quvchilar avvalgi sinfda qoldi.'
+                    c.execute('UPDATE classes SET teacher=NULL WHERE id=? AND school_id=?',(teacher['class_id'],profile['school_id']))
+                c.execute('UPDATE classes SET teacher=? WHERE id=? AND school_id=?',(teacher['id'],target['id'],profile['school_id']))
+                teacher['class_id']=target['id']
+            elif teacher['class_id']:
+                c.execute('UPDATE classes SET name=? WHERE id=? AND school_id=?',(class_name,teacher['class_id'],profile['school_id']))
+            else:
+                c.execute('INSERT INTO classes(school_id,name,teacher) VALUES(?,?,?)',(profile['school_id'],class_name,teacher['id']))
+                teacher['class_id']=c.execute('SELECT id FROM classes WHERE school_id=? AND name=?',(profile['school_id'],class_name)).fetchone()['id']
+            teacher['class_name']=class_name
+            _touch(c,tg,'',{},profile['id'])
+            _teacher_card(out,chat,teacher,note);return
+    _touch(c,tg,'',{},profile['id'])
+    _teacher_card(out,chat,teacher)
+
+def _student_callback(c,tg,chat,profile,data,out):
+    if data.startswith('sj:'):
+        parts=data.split(':')
+        if len(parts)!=3 or parts[2] not in ('M','F'):
+            out[0]['toast']='Jins noto‘g‘ri';return
+        student=_own_student(c,profile,parts[1])
+        if not student:
+            out[0]['toast']='O‘quvchi topilmadi';return
+        c.execute('UPDATE students SET gender=? WHERE id=? AND class_id=?',(parts[2],student['id'],profile['class_id']))
+        student['gender']=parts[2]
+        out[0]['toast']='Jinsi yangilandi'
+        _student_card(out,chat,student);return
+    kind,sid=data.split(':',1)
+    student=_own_student(c,profile,sid)
+    if not student:
+        out[0]['toast']='O‘quvchi topilmadi';return
+    if kind=='ed':
+        _student_card(out,chat,student);return
+    if kind=='sg':
+        out.append({'chat_id':chat,'text':student['name']+'\nJinsini tanlang.','reply_markup':{'inline_keyboard':[[{'text':BOY,'callback_data':'sj:'+sid+':M'},{'text':GIRL,'callback_data':'sj:'+sid+':F'}]]}})
+        return
+    field='stu_rename' if kind=='sn' else 'stu_addr'
+    _touch(c,tg,field,{'id':student['id']},profile['id'])
+    if kind=='sn':
+        _say(out,chat,f"Hozirgi ism: {student['name']}\nYangi familiya va ismni yozing.",CANCEL_KB)
+    else:
+        _say(out,chat,f"Hozirgi manzil: {student['address'] or '—'}\nYangi manzilni yozing. O‘chirish uchun «O‘tkazib yuborish».",ADDRESS_KB)
+
+def _admin_teacher_callback(c,tg,chat,profile,data,out):
+    if data.startswith('ty:'):
+        teacher=_school_teacher(c,profile,data.split(':',1)[1])
+        if not teacher:
+            out[0]['toast']='Sinf rahbari topilmadi';return
+        c.execute('UPDATE classes SET teacher=NULL WHERE teacher=? AND school_id=?',(teacher['id'],profile['school_id']))
+        c.execute("UPDATE users SET status='removed' WHERE id=? AND school_id=? AND role='teacher'",(teacher['id'],profile['school_id']))
+        out[0]['toast']='Olib tashlandi'
+        _staff_message(c,out,chat,profile);return
+    kind,uid=data.split(':',1)
+    teacher=_school_teacher(c,profile,uid)
+    if not teacher:
+        out[0]['toast']='Sinf rahbari topilmadi';return
+    if kind=='tc':
+        _teacher_card(out,chat,teacher);return
+    if kind=='tx':
+        out.append({'chat_id':chat,'text':f"{teacher['name']} ni olib tashlaysizmi? Sinf va o‘quvchilar qoladi.",'reply_markup':{'inline_keyboard':[[{'text':'Ha, olib tashlash','callback_data':'ty:'+uid}],[{'text':'Bekor','callback_data':'tc:'+uid}]]}})
+        return
+    field='adm_name' if kind=='tn' else 'adm_class'
+    _touch(c,tg,field,{'id':teacher['id']},profile['id'])
+    if kind=='tn':
+        _say(out,chat,f"Hozirgi ism: {teacher['name']}\nYangi familiya va ismni yozing.",CANCEL_KB)
+    else:
+        _say(out,chat,f"Hozirgi sinf: {teacher['class_name'] or '—'}\nYangi sinfni yozing. Masalan: 8A",CANCEL_KB)
 
 def _open_attendance(c,tg,chat,profile,out):
     if not profile.get('class_id'):
@@ -542,6 +726,15 @@ def _on_callback(c,row,chat,tg,data,out):
         if not re.fullmatch(r'\d{4}',year):
             out[0]['toast']='Yil noto‘g‘ri';return
         _send_span(c,out,profile,chat,'year',year);return
+    if profile['role']=='admin' and data=='tl':
+        _staff_message(c,out,chat,profile);return
+    if profile['role']=='admin' and data.startswith(('tc:','tn:','tk:','tx:','ty:')):
+        _admin_teacher_callback(c,tg,chat,profile,data,out);return
+    if profile['role']=='teacher' and data=='ls':
+        _touch(c,tg,'',{},profile['id'])
+        _students_message(c,out,chat,profile);return
+    if profile['role']=='teacher' and data.startswith(('ed:','sn:','sg:','sa:','sj:')):
+        _student_callback(c,tg,chat,profile,data,out);return
     state=row['state'] or ''
     draft=_draft(row)
     if data in ('g:M','g:F') and state=='stu_gender' and profile['role']=='teacher':
