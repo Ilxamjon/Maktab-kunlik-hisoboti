@@ -230,8 +230,8 @@ class Tests(unittest.TestCase):
         import io
         self.submit();blob=s.dispatch('GET','/pdf?day=2026-09-16',{},self.tokens[1])
         pdf=PdfReader(io.BytesIO(blob));text=' '.join(page.extract_text() for page in pdf.pages)
-        self.assertIn('yashash manzili',text.lower());self.assertIn('Namunaviy manzil',text);self.assertIn('QISMAN',text)
-        self.assertIn('Maktab raqami',text);self.assertIn('Shundan',text);self.assertIn('7-A',text)
+        self.assertIn('yaşaş manzili',text.lower());self.assertIn('Namunaviy manzil',text);self.assertIn('QISMAN',text)
+        self.assertIn('Maktab raqami',text);self.assertIn('Şundan',text);self.assertIn('7-A',text)
         self.assertGreaterEqual(len(pdf.pages),3)
         self.assertIn('7-B',text)
         self.assertTrue('rahbar' in text.lower())

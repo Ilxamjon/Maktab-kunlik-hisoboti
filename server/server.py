@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import os, json, sqlite3, hashlib, secrets, hmac, time, threading, argparse, getpass, re, logging
 import database
+from alphabet import fold, to_new
 from datetime import date, datetime, timedelta, timezone
 from calendar import monthrange
 from catalog import REASONS, COLUMN_ORDER, EXCEL_LABELS
@@ -235,8 +236,7 @@ def migrate_v6(c):
     c.execute('PRAGMA user_version=6')
 
 def normalized_name(value):
-    value=(value or '').lower().translate(str.maketrans({'ʻ':"'",'ʼ':"'",'‘':"'",'’':"'",'`':"'"}))
-    return re.sub(r'[^a-z0-9а-яёўқғҳ]+','',value)
+    return re.sub(r'[^a-z0-9а-яёўқғҳ]+','',fold(value))
 
 def school_identity(value):
     key=normalized_name(value)
@@ -966,7 +966,7 @@ def dispatch(method,path,data,token=''):
 def send_message(chat,text,token=None):
     token=token or os.getenv('TELEGRAM_BOT_TOKEN')
     if not token or not chat:raise RuntimeError('Telegram sozlanmagan')
-    body=json.dumps({'chat_id':str(chat),'text':str(text)[:4096]},ensure_ascii=False).encode()
+    body=json.dumps({'chat_id':str(chat),'text':to_new(str(text))[:4096]},ensure_ascii=False).encode()
     req=Request('https://api.telegram.org/bot'+token+'/sendMessage',data=body,headers={'Content-Type':'application/json'})
     with urlopen(req,timeout=20) as response:result=json.load(response)
     if not result.get('ok'):raise RuntimeError('Telegram xabarini qabul qilmadi')
@@ -974,7 +974,7 @@ def send_message(chat,text,token=None):
 def send_document(blob,day,token=None,chat=None,caption=None,filename=None,content_type=None):
     token=token or os.getenv('TELEGRAM_BOT_TOKEN');chat=chat or os.getenv('TELEGRAM_CHAT_ID')
     if not token or not chat:raise RuntimeError('Telegram sozlanmagan')
-    caption=caption or (day+' | Jamlangan maktab hisoboti')
+    caption=to_new(caption or (day+' | Jamlangan maktab hisoboti'))
     filename=filename or ('Hisobot-'+day+'.pdf')
     content_type=content_type or 'application/pdf'
     boundary=secrets.token_hex(16);chunks=[]

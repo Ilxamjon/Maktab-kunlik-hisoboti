@@ -19,12 +19,14 @@ class BotTests(unittest.TestCase):
     def tap(self,tg,data):
         self.n+=1
         return bot.handle_update({'update_id':self.n,'callback_query':{'id':'cb'+str(self.n),'from':{'id':tg},'data':data,'message':{'message_id':1,'chat':{'id':tg,'type':'private'}}}})
-    def deputy(self,tg,first,last,school):
+    def deputy(self,tg,first,last,school,director_first='Akmal',director_last='Rahimov'):
         self.send(tg,'/start')
         self.send(tg,bot.DEPUTY)
         self.send(tg,first)
         self.send(tg,last)
-        done=self.send(tg,school)
+        self.send(tg,school)
+        self.send(tg,director_first)
+        done=self.send(tg,director_last)
         code=re.search(r'(\d{6})','\n'.join(item.get('text','') for item in done))
         self.assertIsNotNone(code)
         return code.group(1)
@@ -66,14 +68,14 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(queued),1)
         with s.connect() as c:
             self.assertEqual(c.execute('SELECT telegram_chat_id FROM schools WHERE id=?',(queued[0]['school_id'],)).fetchone()['telegram_chat_id'],'11')
-            self.assertNotEqual(c.execute("SELECT telegram_chat_id FROM schools WHERE name='Ikkinchi maktab'").fetchone()['telegram_chat_id'],'11')
+            self.assertNotEqual(c.execute("SELECT telegram_chat_id FROM schools WHERE name='Ikkinçi maktab'").fetchone()['telegram_chat_id'],'11')
         book=load_workbook(io.BytesIO(queued[0]['pdf']))
         sheet=book.worksheets[0]
         detail=book.worksheets[1]
         self.assertEqual(sheet['A1'].font.name,'Times New Roman')
         self.assertEqual(sheet['A1'].font.size,20)
         self.assertEqual(sheet['G4'].alignment.textRotation,90)
-        self.assertEqual(sheet['B7'].value,'Birinchi maktab')
+        self.assertEqual(sheet['B7'].value,'Birinçi maktab')
         self.assertEqual(sheet['C7'].value,1)
         self.assertEqual(sheet['E7'].value,1)
         self.assertEqual(sheet['F7'].value,1)
@@ -82,9 +84,14 @@ class BotTests(unittest.TestCase):
         self.assertIn("MA'LUMOT",sheet['A1'].value)
         self.assertIn('holati',sheet['S2'].value)
         values=' '.join(str(cell.value) for row in sheet.iter_rows() for cell in row if cell.value is not None)
-        self.assertNotIn('Ikkinchi',values)
+        self.assertNotIn('Ikkinçi',values)
         self.assertNotIn('Jasur',values)
-        self.assertIn("F.I.Sh.",detail['B3'].value)
+        self.assertIn('Direktor:',sheet['A9'].value)
+        self.assertIn('Rahimov Akmal',sheet['A9'].value)
+        self.assertIn('Valiyev Ali',sheet['A10'].value)
+        self.assertIn("F.I.Ş.",detail['B3'].value)
+        detail_text=' '.join(str(cell.value) for row in detail.iter_rows() for cell in row if cell.value is not None)
+        self.assertIn('Rahimov Akmal',detail_text)
         self.assertEqual(detail['B4'].value,'Karimov Jasur')
         self.assertEqual(detail['E4'].value,'7-B')
         self.assertEqual(detail['G4'].value,1)
@@ -101,7 +108,7 @@ class BotTests(unittest.TestCase):
         missing=self.send(5,'000000')
         self.assertIn('topilmadi',missing[-1]['text'])
         taken=self.teacher(5,code,'Sardor','Azimov','7B')
-        self.assertIn('allaqachon',taken[-1]['text'])
+        self.assertIn('allaqaçon',taken[-1]['text'])
 
     def test_same_update_is_not_applied_twice(self):
         code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
@@ -158,12 +165,12 @@ class BotTests(unittest.TestCase):
         self.n+=1
         with patch.object(bot,'fetch_file',return_value=self.roster_file()):
             sent=bot.handle_update(update)
-        self.assertIn('2 o‘quvchi',sent[-1]['text'])
-        self.assertIn('jinsi yo‘q',sent[-1]['text'])
+        self.assertIn('2 öquvçi',sent[-1]['text'])
+        self.assertIn('jinsi yöq',sent[-1]['text'])
         with s.connect() as c:
             rows=list(c.execute('SELECT name,gender,address FROM students WHERE active=1 ORDER BY name'))
         self.assertEqual([(row['name'],row['gender']) for row in rows],[('Karimov Jasur','M'),('Valiyeva Madina','F')])
-        self.assertEqual(rows[0]['address'],'Xo‘jayli')
+        self.assertEqual(rows[0]['address'],'Xöjayli')
         wrong={'update_id':self.n+1,'message':{'message_id':2,'from':{'id':22},'chat':{'id':22,'type':'private'},'document':{'file_id':'file-2','file_name':'7-A.xlsx','file_size':1000}}}
         self.n+=1
         with patch.object(bot,'fetch_file',return_value=self.roster_file('7-A')):
@@ -193,7 +200,7 @@ class BotTests(unittest.TestCase):
         year_file=next(item for item in yearly if item.get('pdf') is not None)
         self.assertIn(str(s.school_year_start(day)),year_file['filename'])
         year_book=load_workbook(io.BytesIO(year_file['pdf']))
-        self.assertIn("o'quv yili",year_book.worksheets[0]['S2'].value)
+        self.assertIn('öquv yili',year_book.worksheets[0]['S2'].value)
         self.assertEqual(year_book.worksheets[1]['B4'].value,'Karimov Jasur')
 
     def test_teacher_edits_student_and_deputy_edits_teacher(self):
@@ -259,16 +266,16 @@ class BotTests(unittest.TestCase):
         self.assertEqual(parsed['class_name'],'7B')
         self.tap(22,'sm:'+str(student))
         moved=self.send(22,'8A')
-        self.assertIn('o‘tkazildi',moved[-1]['text'])
+        self.assertIn('ötkazildi',moved[-1]['text'])
         with s.connect() as c:
             self.assertEqual(c.execute('SELECT name FROM classes WHERE id=(SELECT class_id FROM students WHERE id=?)',(student,)).fetchone()['name'],'8A')
             payload=json.loads(c.execute('SELECT payload FROM reports').fetchone()['payload'])
         self.assertEqual(payload[0]['name'],'Karimov Jasur')
         with s.connect() as c:
-            school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
+            school=c.execute("SELECT id FROM schools WHERE name='Birinçi maktab'").fetchone()['id']
             c.execute('INSERT INTO calendar(school_id,day,teaching) VALUES(?,?,0)',(school,s.today().isoformat()))
         blocked=self.send(44,bot.ATT)
-        self.assertIn('dam olish',blocked[-1]['text'])
+        self.assertIn('dam oliş',blocked[-1]['text'])
         invited=self.send(11,bot.DEPUTY2)
         invite=re.search(r'(\d{6})',invited[-1]['text']).group(1)
         self.send(55,'/start');self.send(55,bot.DEPUTY2)
@@ -301,13 +308,13 @@ class BotTests(unittest.TestCase):
             labels=[button['text'] for row in home[-1]['reply_markup']['keyboard'] for button in row]
             self.assertNotIn(bot.ADMIN_BTN,labels)
             self.assertIn('Tel: 975627989',home[-1]['text'])
-            self.assertIn('Nukus shahri',home[-1]['text'])
+            self.assertIn('Nukus şahri',home[-1]['text'])
             self.assertNotIn('Maktablar:',self.send(11,bot.ADMIN_BTN)[-1]['text'])
             panel=self.send(99,bot.ADMIN_BTN)
-            self.assertIn('Birinchi maktab',panel[-1]['text'])
+            self.assertIn('Birinçi maktab',panel[-1]['text'])
             today=s.today()
             with s.connect() as c:
-                school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
+                school=c.execute("SELECT id FROM schools WHERE name='Birinçi maktab'").fetchone()['id']
                 c.execute('UPDATE schools SET created_on=?,paid_until=?,sub_warned=? WHERE id=?',((today-timedelta(days=3)).isoformat(),'','',school))
             moment=datetime.combine(today,datetime.min.time()).replace(hour=9,minute=30,tzinfo=s.TZ)
             with patch.object(s,'send_message') as send:
@@ -322,17 +329,17 @@ class BotTests(unittest.TestCase):
             self.assertEqual(send.call_args.args[0],'11')
             with s.connect() as c:
                 c.execute('UPDATE schools SET created_on=? WHERE id=?',((today-timedelta(days=10)).isoformat(),school))
-            self.assertIn('ishlamaydi',self.send(22,bot.ATT)[-1]['text'])
-            self.assertIn('ishlamaydi',self.send(11,bot.PDF_BTN)[-1]['text'])
+            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('işlamaydi',self.send(11,bot.PDF_BTN)[-1]['text'])
             shot=self.photo(11)
             self.assertTrue(any('qabul qilindi' in item.get('text','') for item in shot))
             notice=next(item for item in shot if item.get('photo'))
             self.assertEqual(str(notice['chat_id']),'99')
-            self.assertIn('Birinchi maktab',notice['text'])
+            self.assertIn('Birinçi maktab',notice['text'])
             self.assertIn('Valiyev Ali',notice['text'])
             payment=notice['reply_markup']['inline_keyboard'][0][0]['callback_data']
-            self.assertEqual(self.tap(33,payment)[0].get('toast'),'Ruxsat yo‘q')
-            self.assertIn('ishlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertEqual(self.tap(33,payment)[0].get('toast'),'Ruxsat yöq')
+            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
             approved=self.tap(99,payment)
             self.assertTrue(any('Tasdiqlandi' in item.get('text','') for item in approved))
             self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
@@ -345,7 +352,7 @@ class BotTests(unittest.TestCase):
         labels=[button['text'] for row in opened[-1]['reply_markup']['inline_keyboard'] for button in row]
         self.assertIn('Bayram kalendari',labels)
         shown=self.tap(11,'ds:cal')
-        self.assertIn('Saqlash',str(shown[-1]['reply_markup']))
+        self.assertIn('Saqlaş',str(shown[-1]['reply_markup']))
         today=s.today()
         weekdays=[date(today.year,today.month,day).isoformat() for day in range(1,29) if date(today.year,today.month,day).weekday()<5]
         first,second,third=weekdays[:3]
@@ -354,8 +361,8 @@ class BotTests(unittest.TestCase):
         saved=self.tap(11,'ds:save')
         self.assertEqual(saved[0].get('toast'),'Saqlandi')
         with s.connect() as c:
-            school=c.execute("SELECT id FROM schools WHERE name='Birinchi maktab'").fetchone()['id']
-            other=c.execute("SELECT id FROM schools WHERE name='Ikkinchi maktab'").fetchone()['id']
+            school=c.execute("SELECT id FROM schools WHERE name='Birinçi maktab'").fetchone()['id']
+            other=c.execute("SELECT id FROM schools WHERE name='Ikkinçi maktab'").fetchone()['id']
             self.assertFalse(s.is_teaching_day(c,school,first))
             self.assertFalse(s.is_teaching_day(c,school,second))
             self.assertTrue(s.is_teaching_day(c,school,third))

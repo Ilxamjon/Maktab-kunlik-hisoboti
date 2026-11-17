@@ -5,6 +5,7 @@ from datetime import date, datetime
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
+from alphabet import to_new
 from catalog import EXCUSED, REASONS, UNEXCUSED, EXCEL_LABELS
 
 MONTHS=('','Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr')
@@ -37,6 +38,7 @@ def _align(horizontal='center',wrap=True,rotation=0):
     return Alignment(horizontal=horizontal,vertical='center',wrap_text=wrap,textRotation=rotation)
 
 def _write(sheet,row,col,value,size=14,bold=False,italic=False,horizontal='center',wrap=True,rotation=0,fmt=None):
+    if isinstance(value,str):value=to_new(value)
     cell=sheet.cell(row,col,value)
     cell.font=_font(size,bold,italic)
     cell.alignment=_align(horizontal,wrap,rotation)

@@ -2,6 +2,7 @@
 import hashlib, hmac, json, logging, os, re, secrets, time
 from urllib.request import Request, urlopen
 import database, server
+from alphabet import fold, to_new
 from catalog import REASONS, EXCEL_LABELS
 from excel_report import MONTHS, make_chronic_xlsx, make_summary_xlsx, XLSX
 import roster
@@ -21,19 +22,17 @@ STAFF='Sinf rahbarlari'
 DAYS='Dam olish'
 DEPUTY2='Ikkinchi o‘rinbosar'
 CODE_BTN='Maktab kodi'
+DIRECTOR_BTN='Direktor'
 ADMIN_BTN='Admin'
 CANCEL='Bekor qilish'
 DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,ADMIN_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,DIRECTOR_BTN,ADMIN_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
-    text=(value or '').strip().lower()
-    text=text.translate(str.maketrans({'ʻ':"'",'ʼ':"'",'‘':"'",'’':"'",'`':"'"}))
-    text=text.replace("'",'')
-    return ' '.join(text.split())
+    return fold(value)
 
 def same(value,label):
     return norm(value)==norm(label)
@@ -47,23 +46,23 @@ def keyboard(*rows):
 
 ROLE_KB=keyboard([DEPUTY],[TEACHER],[DEPUTY2])
 TEACHER_KB=keyboard([ADD],[LIST,ATT],[ROSTER_BTN])
-DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN])
+DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN,DIRECTOR_BTN])
 CANCEL_KB=keyboard([CANCEL])
 
 def _deputy_kb(c,chat):
     if not server.is_platform_admin(c,chat):return DEPUTY_KB
-    return keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN],[ADMIN_BTN])
+    return keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN,DIRECTOR_BTN],[ADMIN_BTN])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
 
 def clean_name(value):
-    text=' '.join((value or '').split())
+    text=to_new(' '.join((value or '').split()))
     if not 2<=len(text)<=40 or norm(text) in {norm(item) for item in LABELS}:return ''
     if not re.search(r'[^\W\d_]',text,re.UNICODE):return ''
     return text
 
 def clean_school(value):
-    text=' '.join((value or '').split())
+    text=to_new(' '.join((value or '').split()))
     if not 2<=len(text)<=80:return ''
     if not re.search(r'[^\W\d_]',text,re.UNICODE):return ''
     return text
@@ -135,10 +134,35 @@ def deliver(messages):
 def process(update):
     deliver(handle_update(update))
 
+def _localize_markup(markup):
+    if not isinstance(markup,dict):return markup
+    result={}
+    for key,value in markup.items():
+        if key in ('keyboard','inline_keyboard') and isinstance(value,list):
+            rows=[]
+            for row in value:
+                buttons=[]
+                for button in row:
+                    if isinstance(button,dict) and isinstance(button.get('text'),str):
+                        copied=dict(button);copied['text']=to_new(button['text']);buttons.append(copied)
+                    else:buttons.append(button)
+                rows.append(buttons)
+            result[key]=rows
+        else:result[key]=value
+    return result
+
+def _localize(item):
+    if not isinstance(item,dict):return item
+    item=dict(item)
+    for key in ('text','toast','caption'):
+        if isinstance(item.get(key),str):item[key]=to_new(item[key])
+    if 'reply_markup' in item:item['reply_markup']=_localize_markup(item['reply_markup'])
+    return item
+
 def handle_update(update):
     if not isinstance(update,dict):return []
     with server.connect() as c:
-        return _handle(c,update)
+        return [_localize(item) for item in _handle(c,update)]
 
 def _handle(c,update):
     uid=update.get('update_id')
@@ -240,7 +264,7 @@ def _touch(c,tg,state,draft,user_id):
 
 def _profile(c,row):
     if not row or not row['user_id']:return None
-    found=c.execute('''SELECT u.id,u.role,u.name,u.status,u.school_id,s.name AS school_name,s.join_code,s.code AS school_code,s.telegram_chat_id,
+    found=c.execute('''SELECT u.id,u.role,u.name,u.status,u.school_id,s.name AS school_name,s.join_code,s.code AS school_code,s.telegram_chat_id,s.director,
         cl.id AS class_id,cl.name AS class_name
         FROM users u JOIN schools s ON s.id=u.school_id
         LEFT JOIN classes cl ON cl.teacher=u.id AND cl.school_id=u.school_id
@@ -282,7 +306,8 @@ def _home(c,tg,chat,out,profile):
         _say(out,chat,f"{profile['school_name']}\n{profile['class_name']} sinf rahbari: {profile['name']}\nO‘quvchilar: {count}\n«O‘quvchilar»dan ism, jins va manzilni tahrirlaysiz. Ro‘yxatni .xlsx fayl qilib ham yuborishingiz mumkin.",TEACHER_KB)
 
 def _deputy_text(profile):
-    return f"{profile['school_name']}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi.\n\n{server.contact_text()}"
+    director=profile.get('director') or 'kiritilmagan'
+    return f"{profile['school_name']}\nDirektor: {director}\nO‘qituvchilar kodi: {profile['join_code']}\n\nSinf rahbarlari botda «Sinf rahbari» ni tanlab shu kodni yozadi. «Sinf rahbarlari»dan ism va sinfni tahrirlaysiz yoki olib tashlaysiz. Har bir o‘quv kunidagi davomat namuna jadval shaklida jamlanib sizga Excel bo‘lib keladi.\n\n{server.contact_text()}"
 
 def _owner_command(c,tg,chat,text,out):
     cmd=command_name(text)
@@ -385,6 +410,9 @@ def _on_text(c,row,chat,tg,text,out):
         _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
     if profile and profile['role']=='admin' and (cmd=='/kod' or same(text,CODE_BTN)):
         _say(out,chat,f"O‘qituvchilar kodi: {profile['join_code']}",_deputy_kb(c,chat));return
+    if profile and profile['role']=='admin' and same(text,DIRECTOR_BTN):
+        _touch(c,tg,'dir_first',{},profile['id'])
+        _say(out,chat,'Maktab direktorining ismini yozing.',CANCEL_KB);return
     if profile and profile['role']=='admin' and (cmd=='/holat' or same(text,STATUS)):
         _say(out,chat,_status_text(c,profile),_deputy_kb(c,chat));return
     if profile and profile['role']=='admin' and (cmd=='/pdf' or same(text,PDF_BTN)):
@@ -408,6 +436,15 @@ def _on_text(c,row,chat,tg,text,out):
         _register(c,tg,chat,state,draft,text,out);return
     if profile['role']=='admin' and state in ('adm_name','adm_class'):
         _admin_edit_text(c,tg,chat,profile,state,draft,text,out);return
+    if profile['role']=='admin' and state=='dir_first':
+        name=clean_name(text)
+        if not name:
+            _say(out,chat,'Maktab direktorining ismini yozing.',CANCEL_KB);return
+        draft['dir_first']=name
+        _touch(c,tg,'dir_last',draft,profile['id'])
+        _say(out,chat,'Maktab direktorining familiyasini yozing.',CANCEL_KB);return
+    if profile['role']=='admin' and state=='dir_last':
+        _save_director(c,tg,chat,profile,draft,text,out);return
     if profile['role']=='admin' and state in ('adm_off','adm_cal'):
         _mark_holiday_text(c,tg,chat,profile,text,out);return
     if profile['role']=='teacher' and state in ('stu_rename','stu_addr'):
@@ -482,7 +519,22 @@ def _register(c,tg,chat,state,draft,text,out):
         school_name=clean_school(text)
         if not school_name:
             _say(out,chat,'Maktab nomini yozing.',CANCEL_KB);return
-        _create_deputy(c,tg,chat,draft,school_name,out);return
+        draft['school']=school_name
+        _touch(c,tg,'dep_dir_first',draft,None)
+        _say(out,chat,'Maktab direktorining ismini yozing.',CANCEL_KB);return
+    if state=='dep_dir_first':
+        name=clean_name(text)
+        if not name:
+            _say(out,chat,'Maktab direktorining ismini yozing.',CANCEL_KB);return
+        draft['dir_first']=name
+        _touch(c,tg,'dep_dir_last',draft,None)
+        _say(out,chat,'Maktab direktorining familiyasini yozing.',CANCEL_KB);return
+    if state=='dep_dir_last':
+        name=clean_name(text)
+        if not name:
+            _say(out,chat,'Maktab direktorining familiyasini yozing.',CANCEL_KB);return
+        draft['dir_last']=name
+        _create_deputy(c,tg,chat,draft,draft.get('school') or '',out);return
     if state=='tch_code':
         code=re.sub(r'\D','',text)
         school=c.execute('SELECT * FROM schools WHERE join_code=?',(code,)).fetchone() if len(code)==6 else None
@@ -517,8 +569,19 @@ def _register(c,tg,chat,state,draft,text,out):
 def _full_name(draft):
     return (draft.get('last','')+' '+draft.get('first','')).strip()
 
+def _save_director(c,tg,chat,profile,draft,text,out):
+    name=clean_name(text)
+    if not name:
+        _say(out,chat,'Maktab direktorining familiyasini yozing.',CANCEL_KB);return
+    director=(name+' '+(draft.get('dir_first') or '')).strip()
+    c.execute('UPDATE schools SET director=? WHERE id=?',(director,profile['school_id']))
+    profile['director']=director
+    _touch(c,tg,'',{},profile['id'])
+    _say(out,chat,f"Direktor saqlandi: {director}\nBu ism Exceldagi «Direktor:» qatorida chiqadi.",_deputy_kb(c,chat))
+
 def _create_deputy(c,tg,chat,draft,school_name,out):
     full=_full_name(draft)
+    director=(draft.get('dir_last','')+' '+draft.get('dir_first','')).strip() or full
     did=_district_id(c)
     join_code='';school_code=''
     for _ in range(30):
@@ -527,7 +590,7 @@ def _create_deputy(c,tg,chat,draft,school_name,out):
         if not server.code_taken(c,school_code) and not c.execute('SELECT 1 FROM schools WHERE join_code=?',(join_code,)).fetchone():break
     else:
         _say(out,chat,'Kod yaratilmadi. Qayta urinib ko‘ring.',CANCEL_KB);return
-    c.execute('INSERT INTO schools(district_id,code,name,director,executor,telegram_chat_id,join_code,created_on) VALUES(?,?,?,?,?,?,?,?)',(did,school_code,school_name,full,full,str(chat),join_code,server.today().isoformat()))
+    c.execute('INSERT INTO schools(district_id,code,name,director,executor,telegram_chat_id,join_code,created_on) VALUES(?,?,?,?,?,?,?,?)',(did,school_code,school_name,director,full,str(chat),join_code,server.today().isoformat()))
     school_id=c.execute('SELECT id FROM schools WHERE code=?',(school_code,)).fetchone()['id']
     login='tg'+tg
     c.execute("INSERT INTO users(district_id,school_id,login,password,role,name,status) VALUES(?,?,?,?,'admin',?,'active')",(did,school_id,login,server.password_hash(secrets.token_hex(16)),full))
@@ -595,6 +658,7 @@ def _save_student(c,tg,chat,profile,draft,address,out):
     if not name or not gender:
         _touch(c,tg,'stu_name',{},profile['id'])
         _say(out,chat,'O‘quvchini boshidan kiriting.',WIZARD_KB);return
+    address=to_new(address)
     if len(address)>300:
         _say(out,chat,'Manzil juda uzun. Qisqaroq yozing.',ADDRESS_KB);return
     c.execute('INSERT INTO students(class_id,name,gender,address,active) VALUES(?,?,?,?,1)',(profile['class_id'],name,gender,address))
@@ -652,7 +716,7 @@ def _student_edit_text(c,tg,chat,profile,state,draft,text,out):
         c.execute('UPDATE students SET name=? WHERE id=? AND class_id=?',(name,student['id'],profile['class_id']))
         student['name']=name
     else:
-        address='' if same(text,SKIP) or text.strip() in ('-','—') else text.strip()
+        address='' if same(text,SKIP) or text.strip() in ('-','—') else to_new(text.strip())
         if len(address)>300:
             _say(out,chat,'Manzil juda uzun. Qisqaroq yozing.',ADDRESS_KB);return
         c.execute('UPDATE students SET address=? WHERE id=? AND class_id=?',(address,student['id'],profile['class_id']))

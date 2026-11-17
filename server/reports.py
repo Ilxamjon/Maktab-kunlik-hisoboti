@@ -9,6 +9,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from alphabet import to_new
 from catalog import REASONS, EXCUSED, UNEXCUSED
 pdfmetrics.registerFont(TTFont('School',str(Path(__file__).parent/'fonts/DejaVuSans.ttf')))
 STYLE=ParagraphStyle('body',fontName='School',fontSize=8,leading=11)
@@ -17,7 +18,7 @@ TITLE=ParagraphStyle('title',fontName='School',fontSize=11,leading=15,textColor=
 CENTER=ParagraphStyle('center',fontName='School',fontSize=8,leading=10,alignment=1)
 MONTHS=('','Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr')
 GRID=colors.HexColor('#a3acb5');HEAD=colors.HexColor('#e7eef5')
-def p(x,style=STYLE):return Paragraph(escape(str(x)),style)
+def p(x,style=STYLE):return Paragraph(escape(to_new(str(x))),style)
 class Vertical(Flowable):
     def __init__(self,text,height=155):
         Flowable.__init__(self);self.width=16;self.height=height;self.label=p(text,SMALL)
@@ -86,5 +87,5 @@ def make_pdf(rows,period,school=None,monthly=False,calendar_configured=True):
     story.extend([Spacer(1,12),p('Direktor: '+(school.get('director') or '____________________')+'       Imzo: ______________'),p('Ijrochi: '+(school.get('executor') or '____________________'))])
     missing_page(story,rows,period,name,detail_when)
     def footer(canvas,doc):
-        canvas.setFont('School',8);canvas.drawString(22,16,'Maktab Hisobot • '+(code+' • ' if code else '')+period);canvas.drawRightString(820,16,str(doc.page))
+        canvas.setFont('School',8);canvas.drawString(22,16,to_new('Maktab Hisobot • '+(code+' • ' if code else '')+str(period)));canvas.drawRightString(820,16,str(doc.page))
     doc.build(story,onFirstPage=footer,onLaterPages=footer);return stream.getvalue()

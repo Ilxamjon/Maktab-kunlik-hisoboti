@@ -1,11 +1,10 @@
 """Read and write a class teacher's Excel roster: F.I.SH, gender, and address."""
 import io, re
 from openpyxl import Workbook, load_workbook
+from alphabet import fold, to_new
 
 def _norm(value):
-    text=str(value or '').strip().lower()
-    text=text.translate(str.maketrans({'ʻ':"'",'ʼ':"'",'‘':"'",'’':"'",'`':"'"}))
-    return ' '.join(text.replace("'",'').split())
+    return fold(value)
 
 def _compact(value):
     return re.sub(r'[^a-z0-9а-яёўқғҳ]+','',_norm(value))
@@ -58,7 +57,7 @@ def parse_roster(blob):
     seen=set()
     for offset,row in enumerate(rows[header+1:],header+2):
         if len(students)+len(errors)>=80:break
-        name=' '.join(str(row[columns['name']] or '').split()) if columns['name']<len(row) else ''
+        name=to_new(' '.join(str(row[columns['name']] or '').split())) if columns['name']<len(row) else ''
         if not name or name.isdigit():continue
         if not re.search(r'[^\W\d_]',name,re.UNICODE) or len(name)>80:
             errors.append(f"{offset}-qator: ism noto‘g‘ri");continue
@@ -72,7 +71,7 @@ def parse_roster(blob):
             errors.append(f"{offset}-qator: {name} — jinsi yo‘q");continue
         address=''
         if 'address' in columns and columns['address']<len(row) and row[columns['address']] is not None:
-            address=' '.join(str(row[columns['address']]).split())
+            address=to_new(' '.join(str(row[columns['address']]).split()))
         if len(address)>300:address=address[:300]
         students.append({'name':name,'gender':gender,'address':address,'key':key})
     return {'class_name':file_class,'students':students,'errors':errors}
@@ -84,12 +83,12 @@ def display_class(name):
 
 def make_roster_xlsx(class_name,students):
     book=Workbook();sheet=book.active;sheet.title='Royxat'
-    sheet['A1']='Sinf:';sheet['B1']=display_class(class_name)
-    sheet['A4']='№';sheet['B4']='F.I.SH';sheet['C4']='Jinsi';sheet['D4']='Yashash manzili'
+    sheet['A1']='Sinf:';sheet['B1']=to_new(display_class(class_name))
+    sheet['A4']='№';sheet['B4']=to_new('F.I.SH');sheet['C4']='Jinsi';sheet['D4']=to_new('Yashash manzili')
     for index,student in enumerate(students,1):
         sheet.cell(4+index,1,index)
-        sheet.cell(4+index,2,student.get('name') or '')
-        sheet.cell(4+index,3,"O'g'il" if student.get('gender')=='M' else 'Qiz')
-        sheet.cell(4+index,4,student.get('address') or '')
+        sheet.cell(4+index,2,to_new(student.get('name') or ''))
+        sheet.cell(4+index,3,to_new("O'g'il") if student.get('gender')=='M' else 'Qiz')
+        sheet.cell(4+index,4,to_new(student.get('address') or ''))
     for letter,width in zip('ABCD',(8,32,14,36)):sheet.column_dimensions[letter].width=width
     stream=io.BytesIO();book.save(stream);return stream.getvalue()
