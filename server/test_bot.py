@@ -383,3 +383,164 @@ class BotTests(unittest.TestCase):
         with s.connect() as c:
             self.assertTrue(s.is_teaching_day(c,school,first))
             self.assertFalse(s.is_teaching_day(c,school,later))
+
+    def callbacks(self,item):
+        return [button['callback_data'] for row in item.get('reply_markup',{}).get('inline_keyboard',[]) for button in row]
+
+    def school_id(self,name):
+        with s.connect() as c:return c.execute('SELECT id FROM schools WHERE name=?',(name,)).fetchone()['id']
+
+    def drop_seed_school(self):
+        with s.connect() as c:
+            for row in list(c.execute("SELECT id FROM schools WHERE name='Maktab'")):s.delete_school(c,row['id'])
+
+    def test_owner_panel_numbers_schools_and_is_hidden(self):
+        with patch.dict(os.environ,{'ADMIN_CHAT_IDS':'99'}):
+            self.drop_seed_school()
+            self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+            self.deputy(33,'Bobur','Qodirov','Ikkinchi maktab')
+            panel=self.send(99,bot.ADMIN_BTN)[-1]
+            self.assertIn('Maktablar: 2 ta',panel['text'])
+            self.assertIn('1. ',panel['text'])
+            self.assertIn('2. ',panel['text'])
+            one=self.school_id('Birinçi maktab')
+            self.assertIn('ad:s:'+str(one),self.callbacks(panel))
+            self.assertEqual(self.tap(11,'ad:l:a:0')[0].get('toast'),'Ruxsat yöq')
+            self.assertEqual(self.tap(11,'ad:del:'+str(one))[0].get('toast'),'Ruxsat yöq')
+            self.assertNotIn('Maktablar:',self.send(11,bot.ADMIN_BTN)[-1]['text'])
+            self.assertIn('Maktablar: 0 ta',self.tap(99,'ad:l:c:0')[-1]['text'])
+            self.assertIn('Maktablar: 2 ta',self.tap(99,'ad:l:a:0')[-1]['text'])
+            self.assertIn('Maktablar: 0 ta',self.tap(99,'ad:l:e:0')[-1]['text'])
+            found=self.tap(99,'ad:q')
+            self.assertIn('yozing',found[-1]['text'])
+            result=self.send(99,'ikkin')[-1]['text']
+            self.assertIn('Maktablar: 1 ta',result)
+            self.assertIn('Ikkinçi maktab',result)
+            self.assertNotIn('Birinçi',result)
+            self.tap(99,'ad:q')
+            self.assertIn('Maktab topilmadi',self.send(99,'mavjud emas')[-1]['text'])
+
+    def test_owner_panel_pages_after_ten_schools(self):
+        with patch.dict(os.environ,{'ADMIN_CHAT_IDS':'99'}):
+            self.drop_seed_school()
+            with s.connect() as c:
+                did=bot._district_id(c)
+                for index in range(1,13):
+                    c.execute('INSERT INTO schools(district_id,code,name,director,executor,join_code,created_on) VALUES(?,?,?,?,?,?,?)',(did,'TG-9%05d'%index,'Maktab %d'%index,'','','9%05d'%index,s.today().isoformat()))
+            first=self.send(99,bot.ADMIN_BTN)[-1]
+            self.assertIn('Maktablar: 12 ta',first['text'])
+            self.assertIn('1/2-sahifa',first['text'])
+            self.assertIn('10. ',first['text'])
+            self.assertNotIn('11. ',first['text'])
+            self.assertIn('ad:l:a:1',self.callbacks(first))
+            second=self.tap(99,'ad:l:a:1')[-1]
+            self.assertIn('11. ',second['text'])
+            self.assertIn('12. ',second['text'])
+            self.assertNotIn('1. 🟢 Maktab 1 ',second['text'])
+            self.assertIn('ad:l:a:0',self.callbacks(second))
+
+    def test_owner_edits_school_subscription_and_sends_messages(self):
+        with patch.dict(os.environ,{'ADMIN_CHAT_IDS':'99'}):
+            self.drop_seed_school()
+            code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+            self.deputy(33,'Bobur','Qodirov','Ikkinchi maktab')
+            self.teacher(22,code,'Dilnoza','Karimova','7b')
+            self.add_student(22,'Karimov Jasur')
+            one=self.school_id('Birinçi maktab')
+            card=self.tap(99,'ad:s:'+str(one))[-1]
+            self.assertIn('Birinçi maktab',card['text'])
+            self.assertIn('Direktor: Rahimov Akmal',card['text'])
+            self.assertIn('Ali',card['text'])
+            self.assertIn('Sinflar: 1',card['text'])
+            for action in ('x','d','r','m','c','del'):self.assertIn(f'ad:{action}:{one}',self.callbacks(card))
+            extended=self.tap(99,'ad:x:'+str(one))
+            self.assertEqual(extended[0].get('toast'),'Uzaytirildi')
+            self.assertTrue(any(str(item.get('chat_id'))=='11' and 'uzaytirildi' in item.get('text','') for item in extended))
+            with s.connect() as c:
+                until=s.date.fromisoformat(c.execute('SELECT paid_until FROM schools WHERE id=?',(one,)).fetchone()['paid_until'])
+            self.assertGreater(until,s.today()+s.timedelta(days=20))
+            self.tap(99,'ad:d:'+str(one))
+            self.assertIn('Sanani',self.send(99,'xato sana')[-1]['text'])
+            dated=self.send(99,'25.12.2030')
+            self.assertIn('25.12.2030',dated[-1]['text'])
+            self.assertTrue(any(str(item.get('chat_id'))=='11' and '25.12.2030' in item.get('text','') for item in dated))
+            with s.connect() as c:self.assertEqual(c.execute('SELECT paid_until FROM schools WHERE id=?',(one,)).fetchone()['paid_until'],'2030-12-25')
+            self.tap(99,'ad:r:'+str(one))
+            renamed=self.send(99,'Yangi Çinoz maktab')[-1]
+            self.assertIn('Yangi Çinoz maktab',renamed['text'])
+            with s.connect() as c:self.assertEqual(c.execute('SELECT name FROM schools WHERE id=?',(one,)).fetchone()['name'],'Yangi Çinoz maktab')
+            self.tap(99,'ad:m:'+str(one))
+            sent=self.send(99,'Ertaga yig‘ilish bor')
+            self.assertTrue(any(str(item.get('chat_id'))=='11' and 'Ertaga' in item.get('text','') for item in sent))
+            self.assertFalse(any(str(item.get('chat_id'))=='33' for item in sent))
+            self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('ad:cy:'+str(one),self.callbacks(self.tap(99,'ad:c:'+str(one))[-1]))
+            closed=self.tap(99,'ad:cy:'+str(one))
+            self.assertTrue(any(str(item.get('chat_id'))=='11' and 'Obuna' in item.get('text','') for item in closed))
+            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('Maktablar: 1 ta',self.tap(99,'ad:l:c:0')[-1]['text'])
+            self.tap(99,'ad:x:'+str(one))
+            self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
+
+    def test_owner_deletes_school_and_everything_in_it(self):
+        with patch.dict(os.environ,{'ADMIN_CHAT_IDS':'99'}):
+            self.drop_seed_school()
+            code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+            self.deputy(33,'Bobur','Qodirov','Ikkinchi maktab')
+            self.teacher(22,code,'Dilnoza','Karimova','7b')
+            self.add_student(22,'Karimov Jasur')
+            self.send(22,bot.ATT)
+            with s.connect() as c:student=c.execute("SELECT id FROM students WHERE name='Karimov Jasur'").fetchone()['id']
+            self.tap(22,'who:'+str(student));self.tap(22,'why:'+str(student)+':1');self.tap(22,'go')
+            self.photo(11)
+            one=self.school_id('Birinçi maktab');two=self.school_id('Ikkinçi maktab')
+            asked=self.tap(99,'ad:del:'+str(one))[-1]
+            self.assertIn('ad:dely:'+str(one),self.callbacks(asked))
+            self.assertIn('Qaytarib',asked['text'])
+            with s.connect() as c:self.assertIsNotNone(c.execute('SELECT 1 FROM schools WHERE id=?',(one,)).fetchone())
+            done=self.tap(99,'ad:dely:'+str(one))
+            self.assertIn('Maktablar: 1 ta',done[-1]['text'])
+            with s.connect() as c:
+                for sql in ('SELECT count(*) FROM schools WHERE id=%d'%one,'SELECT count(*) FROM users WHERE school_id=%d'%one,'SELECT count(*) FROM classes WHERE school_id=%d'%one,'SELECT count(*) FROM reports WHERE school_id=%d'%one,'SELECT count(*) FROM students','SELECT count(*) FROM payments WHERE school_id=%d'%one,'SELECT count(*) FROM outbox WHERE school_id=%d'%one):
+                    self.assertEqual(c.execute(sql).fetchone()[0],0,sql)
+                self.assertEqual(c.execute('SELECT count(*) FROM schools WHERE id=?',(two,)).fetchone()[0],1)
+                self.assertEqual(c.execute("SELECT count(*) FROM users WHERE school_id=?",(two,)).fetchone()[0],1)
+            fresh=self.send(11,'/start')[-1]
+            self.assertIn('Maktab Hisobot',fresh['text'])
+            self.assertIn('Direktor örinbosari',[button['text'] for row in fresh['reply_markup']['keyboard'] for button in row])
+            self.assertIn('Ikkinçi maktab',self.send(33,'/start')[-1]['text'])
+
+    def test_owner_stats_history_and_broadcast(self):
+        with patch.dict(os.environ,{'ADMIN_CHAT_IDS':'99'}):
+            self.drop_seed_school()
+            code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+            self.deputy(33,'Bobur','Qodirov','Ikkinchi maktab')
+            self.teacher(22,code,'Dilnoza','Karimova','7b')
+            self.add_student(22,'Karimov Jasur')
+            one=self.school_id('Birinçi maktab')
+            with s.connect() as c:
+                c.execute('UPDATE schools SET created_on=? WHERE id=?',((s.today()-s.timedelta(days=10)).isoformat(),one))
+            stats=self.tap(99,'ad:st')[-1]['text']
+            for expected in ('Maktablar: 2','Oçiq: 1','Yopiq: 1','öquvçilar: 1'):self.assertIn(expected,stats)
+            self.assertIn('yoq',self.tap(99,'ad:pend')[-1]['text'].replace('ö','o').replace('‘',''))
+            self.assertIn('Hali kvitansiya',self.tap(99,'ad:ph')[-1]['text'])
+            self.photo(11)
+            self.assertIn('Kutilayotgan kvitansiyalar',self.tap(99,'ad:pend')[-1]['text'])
+            history=self.tap(99,'ad:ph')[-1]
+            self.assertIn('kutilmoqda',history['text'])
+            paysee=[item for item in self.callbacks(history) if item.startswith('paysee:')][0]
+            self.assertTrue(any(item.get('photo') for item in self.tap(99,paysee)))
+            card=self.tap(99,'ad:s:'+str(one))[-1]
+            self.assertIn('kutilmoqda 1',card['text'])
+            last=[item for item in self.callbacks(card) if item.startswith('ad:p:')][0]
+            self.assertTrue(any(item.get('photo') for item in self.tap(99,last)))
+            self.tap(99,'ad:bc')
+            preview=self.send(99,'Hammaga salom')[-1]
+            self.assertIn('Hammaga salom',preview['text'])
+            self.assertIn('ad:bcy',self.callbacks(preview))
+            sent=self.tap(99,'ad:bcy')
+            targets=sorted(str(item['chat_id']) for item in sent if item.get('text')=='Hammaga salom')
+            self.assertEqual(targets,['11','33'])
+            again=self.tap(99,'ad:bcy')
+            self.assertEqual(again[0].get('toast'),'Xabar topilmadi')
+            self.assertFalse(any(item.get('text')=='Hammaga salom' for item in again))

@@ -431,6 +431,27 @@ def extend_subscription(c,school_id,day=None):
     c.execute("UPDATE schools SET paid_until=?,sub_warned='' WHERE id=?",(until.isoformat(),school_id))
     return until
 
+def set_access_until(c,school_id,day):
+    """Make the school open exactly through `day` (a past day closes it)."""
+    row=school_row(c,school_id)
+    created=(row.get('created_on') or '').strip()
+    limit=day-timedelta(days=TRIAL_DAYS-1)
+    if not created or date.fromisoformat(created)>limit:created=limit.isoformat()
+    c.execute("UPDATE schools SET created_on=?,paid_until=?,sub_warned='' WHERE id=?",(created,day.isoformat(),school_id))
+
+def delete_school(c,school_id):
+    """Remove one school and everything that belongs to it."""
+    owned='SELECT id FROM users WHERE school_id=?'
+    c.execute('DELETE FROM reports WHERE school_id=?',(school_id,))
+    c.execute('DELETE FROM students WHERE class_id IN (SELECT id FROM classes WHERE school_id=?)',(school_id,))
+    c.execute('DELETE FROM classes WHERE school_id=?',(school_id,))
+    c.execute("UPDATE bot_chats SET user_id=NULL,state='',draft='{}' WHERE user_id IN ("+owned+')',(school_id,))
+    c.execute('DELETE FROM sessions WHERE user_id IN ('+owned+')',(school_id,))
+    for table in ('outbox','calendar','payments','digests'):
+        c.execute('DELETE FROM '+table+' WHERE school_id=?',(school_id,))
+    c.execute('DELETE FROM users WHERE school_id=?',(school_id,))
+    c.execute('DELETE FROM schools WHERE id=?',(school_id,))
+
 def contact_text():
     return 'Qayta aloqa: Ilxam (admin)\nTel: 975627989\nManzil: Nukus shahri'
 

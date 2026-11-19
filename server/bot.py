@@ -1,5 +1,6 @@
 """Telegram bot: teacher registration, class roster, daily attendance, deputy PDF."""
 import hashlib, hmac, json, logging, os, re, secrets, time
+from datetime import date, timedelta
 from urllib.request import Request, urlopen
 import database, server
 from alphabet import fold, to_new
@@ -286,7 +287,8 @@ def _district_id(c):
 def _home(c,tg,chat,out,profile):
     if not profile:
         _touch(c,tg,'role',{},None)
-        _say(out,chat,'Maktab Hisobot.\n\nDirektor o‘rinbosari maktabni ochadi va o‘qituvchilarga kod beradi.\nSinf rahbari shu kod bilan kirib, sinf ro‘yxatini va har kunlik davomatni yuboradi.',ROLE_KB)
+        markup=keyboard([DEPUTY],[TEACHER],[DEPUTY2],[ADMIN_BTN]) if server.is_platform_admin(c,tg) else ROLE_KB
+        _say(out,chat,'Maktab Hisobot.\n\nDirektor o‘rinbosari maktabni ochadi va o‘qituvchilarga kod beradi.\nSinf rahbari shu kod bilan kirib, sinf ro‘yxatini va har kunlik davomatni yuboradi.',markup)
         return
     if profile['role']=='teacher' and not profile['class_id']:
         _touch(c,tg,'fix_class',{},profile['id'])
@@ -319,24 +321,288 @@ def _owner_command(c,tg,chat,text,out):
             _admin_panel(c,chat,out);return True
     return False
 
+OWN_PAGE=10
+OWN_MODES={'a':'Hammasi','e':'Tugayotgan','c':'Yopiq'}
+
+def _fmt_day(value):
+    return value.strftime('%d.%m.%Y')
+
+def _owner_menu():
+    return [
+        [{'text':'Qidirish','callback_data':'ad:q'},{'text':'Kvitansiyalar','callback_data':'ad:pend'}],
+        [{'text':'To‘lovlar tarixi','callback_data':'ad:ph'},{'text':'Statistika','callback_data':'ad:st'}],
+        [{'text':'Hammaga xabar','callback_data':'ad:bc'}],
+    ]
+
+def _school_mark(access):
+    if not access['open']:return '🔴'
+    return '🟡' if access['days_left']<=3 else '🟢'
+
+def _school_line(index,school,access):
+    if access['open']:
+        return f"{index}. {_school_mark(access)} {school['name']} — {_fmt_day(access['until'])} gacha, {access['days_left']} kun"
+    return f"{index}. {_school_mark(access)} {school['name']} — yopiq ({_fmt_day(access['until'])} da tugagan)"
+
 def _admin_panel(c,chat,out):
-    lines=['Maktablar:']
-    buttons=[]
-    schools=list(c.execute('SELECT id,name FROM schools ORDER BY id'))
-    if not schools:lines.append('Hali maktab yo‘q.')
-    for school in schools:
+    _owner_list(c,chat,out,'a',0)
+
+def _owner_list(c,chat,out,mode='a',page=0,query=''):
+    rows=[]
+    for school in c.execute('SELECT id,name FROM schools ORDER BY id'):
         access=server.school_access(c,school['id'])
-        if access['open']:
-            lines.append(f"{school['name']} — {access['until'].strftime('%d.%m.%Y')} gacha, {access['days_left']} kun")
-        else:
-            lines.append(f"{school['name']} — to‘lov yo‘q, bot yopiq")
-    pending=list(c.execute("SELECT id,school_name,deputy_name FROM payments WHERE status='pending' ORDER BY id"))
-    if pending:
-        lines.extend(['','Kvitansiyalar:'])
-        for item in pending:
-            lines.append(f"#{item['id']} {item['school_name']} — {item['deputy_name']}")
-            buttons.append([{'text':f"#{item['id']} {item['school_name'][:28]}",'callback_data':'paysee:'+str(item['id'])}])
-    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons} if buttons else _deputy_kb(c,chat))
+        if mode=='e' and not (access['open'] and access['days_left']<=3):continue
+        if mode=='c' and access['open']:continue
+        if query and fold(query) not in fold(school['name']):continue
+        rows.append((school,access))
+    pages=max(1,-(-len(rows)//OWN_PAGE))
+    page=min(max(page,0),pages-1)
+    title=f"Qidiruv: {query}" if query else OWN_MODES.get(mode,'Hammasi')
+    lines=[f"Maktablar: {len(rows)} ta ({title})"]
+    if pages>1:lines[0]+=f", {page+1}/{pages}-sahifa"
+    buttons=[];numbers=[]
+    shown=rows[page*OWN_PAGE:(page+1)*OWN_PAGE]
+    if not shown:lines.append('Maktab topilmadi.')
+    for offset,(school,access) in enumerate(shown):
+        index=page*OWN_PAGE+offset+1
+        lines.append(_school_line(index,school,access))
+        numbers.append({'text':str(index),'callback_data':'ad:s:'+str(school['id'])})
+    for start in range(0,len(numbers),5):buttons.append(numbers[start:start+5])
+    if pages>1 and not query:
+        nav=[]
+        if page>0:nav.append({'text':'‹ Oldingi','callback_data':f'ad:l:{mode}:{page-1}'})
+        if page<pages-1:nav.append({'text':'Keyingi ›','callback_data':f'ad:l:{mode}:{page+1}'})
+        buttons.append(nav)
+    buttons.append([{'text':('• ' if key==mode and not query else '')+label,'callback_data':f'ad:l:{key}:0'} for key,label in OWN_MODES.items()])
+    buttons.extend(_owner_menu())
+    pending=c.execute("SELECT count(*) AS n FROM payments WHERE status='pending'").fetchone()['n']
+    if pending:lines.extend(['',f'Kutilayotgan kvitansiya: {pending} ta'])
+    lines.extend(['','🟢 ochiq  🟡 3 kun ichida tugaydi  🔴 yopiq'])
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons})
+
+def _owner_school(c,raw):
+    if not str(raw).isdigit():return None
+    return c.execute('SELECT * FROM schools WHERE id=?',(int(raw),)).fetchone()
+
+def _owner_card(c,chat,out,school,note=''):
+    sid=school['id']
+    access=server.school_access(c,sid)
+    today=server.today().isoformat()
+    deputies=', '.join(item['name'] for item in c.execute("SELECT name FROM users WHERE school_id=? AND role='admin' AND status='active' ORDER BY id",(sid,))) or '—'
+    classes=c.execute('SELECT count(*) AS n FROM classes WHERE school_id=?',(sid,)).fetchone()['n']
+    teachers=c.execute("SELECT count(*) AS n FROM users WHERE school_id=? AND role='teacher' AND status='active'",(sid,)).fetchone()['n']
+    pupils=c.execute('SELECT count(*) AS n FROM students s JOIN classes cl ON cl.id=s.class_id WHERE cl.school_id=? AND s.active=1',(sid,)).fetchone()['n']
+    sent=c.execute('SELECT count(*) AS n FROM reports WHERE school_id=? AND day=?',(sid,today)).fetchone()['n']
+    paid={item['status']:item['n'] for item in c.execute('SELECT status,count(*) AS n FROM payments WHERE school_id=? GROUP BY status',(sid,))}
+    last=c.execute('SELECT id,status FROM payments WHERE school_id=? ORDER BY id DESC LIMIT 1',(sid,)).fetchone()
+    if access['open']:state=f"{_school_mark(access)} ochiq, {_fmt_day(access['until'])} gacha ({access['days_left']} kun qoldi)"
+    else:state=f"{_school_mark(access)} yopiq ({_fmt_day(access['until'])} da tugagan)"
+    lines=[
+        school['name'],
+        f"Kod: {school['join_code'] or '—'}",
+        f"Direktor: {school['director'] or '—'}",
+        f"Direktor o‘rinbosari: {deputies}",
+        f"Ikkinchi o‘rinbosar: {'bor' if (school['deputy_chat_2'] or '').strip() else 'yo‘q'}",
+        f"Sinflar: {classes}, sinf rahbarlari: {teachers}, o‘quvchilar: {pupils}",
+        f"Bugun jo‘natgan sinflar: {sent}/{classes}",
+        f"Holat: {state}",
+        f"Ochilgan sana: {school['created_on'] or '—'}",
+        f"To‘lovlar: tasdiqlangan {paid.get('approved',0)}, kutilmoqda {paid.get('pending',0)}, rad etilgan {paid.get('rejected',0)}",
+    ]
+    if note:lines.extend(['',note])
+    sid_text=str(sid)
+    buttons=[
+        [{'text':'+1 oy','callback_data':'ad:x:'+sid_text},{'text':'Sanani belgilash','callback_data':'ad:d:'+sid_text}],
+        [{'text':'Nomini o‘zgartirish','callback_data':'ad:r:'+sid_text},{'text':'Xabar yuborish','callback_data':'ad:m:'+sid_text}],
+    ]
+    if access['open']:buttons.append([{'text':'Yopish','callback_data':'ad:c:'+sid_text}])
+    if last:buttons.append([{'text':'So‘nggi kvitansiya','callback_data':'ad:p:'+str(last['id'])}])
+    buttons.append([{'text':'O‘chirish','callback_data':'ad:del:'+sid_text}])
+    buttons.append([{'text':'Ro‘yxatga qaytish','callback_data':'ad:l:a:0'}])
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons})
+
+def _notify_school(c,out,school,text):
+    for target in server.deputy_chats(school):_say(out,target,text)
+
+def _owner_day(text):
+    value=(text or '').strip()
+    match=re.fullmatch(r'(\d{1,2})[./-](\d{1,2})[./-](\d{4})',value)
+    parts=(int(match.group(3)),int(match.group(2)),int(match.group(1))) if match else None
+    if not parts:
+        match=re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})',value)
+        parts=(int(match.group(1)),int(match.group(2)),int(match.group(3))) if match else None
+    if not parts or not 2020<=parts[0]<=2100:return None
+    try:return date(*parts)
+    except ValueError:return None
+
+def _owner_stats(c,chat,out):
+    today=server.today()
+    total=opened=trial=paid=closed=expiring=0
+    for school in c.execute('SELECT id FROM schools'):
+        access=server.school_access(c,school['id'])
+        total+=1
+        if not access['open']:closed+=1;continue
+        opened+=1
+        if access['trial']:trial+=1
+        else:paid+=1
+        if access['days_left']<=3:expiring+=1
+    teachers=c.execute("SELECT count(*) AS n FROM users WHERE role='teacher' AND status='active'").fetchone()['n']
+    pupils=c.execute('SELECT count(*) AS n FROM students WHERE active=1 AND class_id IN (SELECT id FROM classes)').fetchone()['n']
+    classes=c.execute('SELECT count(*) AS n FROM classes').fetchone()['n']
+    sent=c.execute('SELECT count(*) AS n FROM reports WHERE day=?',(today.isoformat(),)).fetchone()['n']
+    pending=c.execute("SELECT count(*) AS n FROM payments WHERE status='pending'").fetchone()['n']
+    approved=c.execute("SELECT count(*) AS n FROM payments WHERE status='approved'").fetchone()['n']
+    month_start=time.mktime(today.replace(day=1).timetuple())
+    month=c.execute("SELECT count(*) AS n FROM payments WHERE status='approved' AND created>=?",(month_start,)).fetchone()['n']
+    fee=f"{server.FEE_SUM:,}".replace(',',' ')
+    income=f"{month*server.FEE_SUM:,}".replace(',',' ')
+    lines=[
+        f"Statistika ({_fmt_day(today)})",
+        f"Maktablar: {total}",
+        f"Ochiq: {opened} (sinov: {trial}, to‘lagan: {paid})",
+        f"Yopiq: {closed}",
+        f"3 kun ichida tugaydi: {expiring}",
+        f"Sinf rahbarlari: {teachers}, sinflar: {classes}, o‘quvchilar: {pupils}",
+        f"Bugun jo‘natilgan sinf hisobotlari: {sent}",
+        f"Kutilayotgan kvitansiya: {pending}",
+        f"Tasdiqlangan to‘lovlar: jami {approved} ta, shu oy {month} ta ({income} so‘m)",
+        f"Oylik narx: {fee} so‘m",
+    ]
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':[[{'text':'Maktablar','callback_data':'ad:l:a:0'}]]})
+
+def _owner_pending(c,chat,out):
+    pending=list(c.execute("SELECT id,school_id,school_name,deputy_name FROM payments WHERE status='pending' ORDER BY id"))
+    if not pending:
+        _say(out,chat,'Kutilayotgan kvitansiya yo‘q.',{'inline_keyboard':[[{'text':'Maktablar','callback_data':'ad:l:a:0'}]]});return
+    lines=['Kutilayotgan kvitansiyalar:'];buttons=[]
+    for item in pending:
+        lines.append(f"#{item['id']} {item['school_name']} — {item['deputy_name']}")
+        buttons.append([{'text':f"#{item['id']} {item['school_name'][:28]}",'callback_data':'paysee:'+str(item['id'])}])
+    buttons.append([{'text':'Maktablar','callback_data':'ad:l:a:0'}])
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons})
+
+def _owner_history(c,chat,out):
+    names={'approved':'tasdiqlangan','pending':'kutilmoqda','rejected':'rad etilgan','replaced':'almashtirilgan'}
+    rows=list(c.execute('SELECT id,school_name,deputy_name,status,created FROM payments ORDER BY id DESC LIMIT 15'))
+    lines=['So‘nggi kvitansiyalar:' if rows else 'Hali kvitansiya yo‘q.'];buttons=[]
+    for item in rows:
+        stamp=time.strftime('%d.%m %H:%M',time.localtime(item['created']))
+        lines.append(f"#{item['id']} {item['school_name']} — {names.get(item['status'],item['status'])}, {stamp}")
+        buttons.append([{'text':f"#{item['id']} {item['school_name'][:28]}",'callback_data':'paysee:'+str(item['id'])}])
+    buttons.append([{'text':'Maktablar','callback_data':'ad:l:a:0'}])
+    _say(out,chat,'\n'.join(lines),{'inline_keyboard':buttons})
+
+def _owner_ask(c,row,tg,chat,out,state,draft,prompt):
+    _touch(c,tg,state,draft,row['user_id'])
+    _say(out,chat,prompt,CANCEL_KB)
+
+def _owner_callback(c,row,chat,tg,data,out):
+    parts=data.split(':')
+    action=parts[1] if len(parts)>1 else ''
+    arg=parts[2] if len(parts)>2 else ''
+    if action=='l':
+        mode=arg if arg in OWN_MODES else 'a'
+        page=int(parts[3]) if len(parts)>3 and parts[3].isdigit() else 0
+        _owner_list(c,chat,out,mode,page);return
+    if action=='q':
+        _owner_ask(c,row,tg,chat,out,'own_q',{},'Maktab nomidan bir bo‘lak yozing.');return
+    if action=='pend':_owner_pending(c,chat,out);return
+    if action=='ph':_owner_history(c,chat,out);return
+    if action=='st':_owner_stats(c,chat,out);return
+    if action=='bc':
+        _owner_ask(c,row,tg,chat,out,'own_bc',{},'Barcha direktor o‘rinbosarlariga yuboriladigan xabarni yozing.');return
+    if action=='bcy':
+        _owner_broadcast(c,row,tg,chat,out);return
+    if action=='p':
+        payment=c.execute('SELECT * FROM payments WHERE id=?',(int(arg),)).fetchone() if arg.isdigit() else None
+        if not payment:
+            out[0]['toast']='Topilmadi';return
+        item={'chat_id':chat,'photo':payment['file_id'],'text':_receipt_caption(payment)+f"\nHolat: {payment['status']}"}
+        if payment['status']=='pending':item['reply_markup']=_receipt_buttons(payment['id'])
+        out.append(item);return
+    school=_owner_school(c,arg)
+    if not school:
+        out[0]['toast']='Maktab topilmadi';return
+    sid=school['id']
+    if action=='s':_owner_card(c,chat,out,school);return
+    if action=='x':
+        until=server.extend_subscription(c,sid)
+        out[0]['toast']='Uzaytirildi'
+        _notify_school(c,out,school,f"Obuna uzaytirildi. Bot {_fmt_day(until)} gacha ishlaydi.")
+        _owner_card(c,chat,out,_owner_school(c,sid),f"Obuna {_fmt_day(until)} gacha uzaytirildi.");return
+    if action=='d':
+        _owner_ask(c,row,tg,chat,out,'own_date',{'sid':sid},f"{school['name']}\nBot qaysi sanagacha ishlasin? Masalan: 25.12.2026");return
+    if action=='r':
+        _owner_ask(c,row,tg,chat,out,'own_name',{'sid':sid},f"Hozirgi nom: {school['name']}\nYangi nomni yozing.");return
+    if action=='m':
+        _owner_ask(c,row,tg,chat,out,'own_msg',{'sid':sid},f"{school['name']}\nDirektor o‘rinbosariga yuboriladigan xabarni yozing.");return
+    if action=='c':
+        _say(out,chat,f"{school['name']} uchun botni hozir yopasizmi? Sinf rahbarlari ham, o‘rinbosar ham ishlata olmaydi.",{'inline_keyboard':[[{'text':'Ha, yopish','callback_data':'ad:cy:'+str(sid)}],[{'text':'Bekor','callback_data':'ad:s:'+str(sid)}]]});return
+    if action=='cy':
+        server.set_access_until(c,sid,server.today()-timedelta(days=1))
+        out[0]['toast']='Yopildi'
+        _notify_school(c,out,school,'Obuna to‘xtatildi. Bot ishlashi uchun to‘lov qiling.\n\n'+server.contact_text())
+        _owner_card(c,chat,out,_owner_school(c,sid),'Maktab yopildi.');return
+    if action=='del':
+        _say(out,chat,f"{school['name']} maktabini butunlay o‘chirasizmi?\nBarcha sinf rahbarlari, sinflar, o‘quvchilar, hisobotlar va to‘lov tarixi o‘chadi. Qaytarib bo‘lmaydi.",{'inline_keyboard':[[{'text':'Ha, butunlay o‘chirish','callback_data':'ad:dely:'+str(sid)}],[{'text':'Bekor','callback_data':'ad:s:'+str(sid)}]]});return
+    if action=='dely':
+        name=school['name']
+        server.delete_school(c,sid)
+        out[0]['toast']='O‘chirildi'
+        _say(out,chat,f"{name} o‘chirildi.")
+        _owner_list(c,chat,out,'a',0);return
+    out[0]['toast']='Topilmadi'
+
+def _owner_broadcast(c,row,tg,chat,out):
+    draft=_draft(row)
+    text=(draft.get('text') or '').strip()
+    if row['state']!='own_bcc' or not text:
+        out[0]['toast']='Xabar topilmadi';return
+    sent=set()
+    for school in c.execute('SELECT * FROM schools ORDER BY id'):
+        for target in server.deputy_chats(school):
+            if target in sent:continue
+            sent.add(target);_say(out,target,text)
+    _touch(c,tg,'',{},row['user_id'])
+    out[0]['toast']='Yuborildi'
+    _say(out,chat,f"Xabar {len(sent)} ta chatga yuborildi.")
+
+def _owner_text(c,row,chat,tg,state,draft,text,out):
+    if state=='own_q':
+        _touch(c,tg,'',{},row['user_id'])
+        _owner_list(c,chat,out,'a',0,text.strip());return
+    if state=='own_bc' or state=='own_bcc':
+        message=text.strip()
+        if len(message)>1000:
+            _say(out,chat,'Xabar 1000 belgidan oshmasin.',CANCEL_KB);return
+        _touch(c,tg,'own_bcc',{'text':message},row['user_id'])
+        _say(out,chat,'Yuboriladigan xabar:\n\n'+message,{'inline_keyboard':[[{'text':'Hammaga yuborish','callback_data':'ad:bcy'}],[{'text':'Bekor qilish','callback_data':'ad:l:a:0'}]]});return
+    school=_owner_school(c,draft.get('sid'))
+    if not school:
+        _touch(c,tg,'',{},row['user_id']);_say(out,chat,'Maktab topilmadi.');return
+    if state=='own_name':
+        name=clean_school(text)
+        if not name:
+            _say(out,chat,'Maktab nomini yozing.',CANCEL_KB);return
+        c.execute('UPDATE schools SET name=? WHERE id=?',(name,school['id']))
+        _touch(c,tg,'',{},row['user_id'])
+        _owner_card(c,chat,out,_owner_school(c,school['id']),'Nom o‘zgartirildi.');return
+    if state=='own_date':
+        day=_owner_day(text)
+        if not day:
+            _say(out,chat,'Sanani 25.12.2026 ko‘rinishida yozing.',CANCEL_KB);return
+        server.set_access_until(c,school['id'],day)
+        _touch(c,tg,'',{},row['user_id'])
+        access=server.school_access(c,school['id'])
+        if access['open']:_notify_school(c,out,school,f"Obuna sanasi yangilandi. Bot {_fmt_day(day)} gacha ishlaydi.")
+        _owner_card(c,chat,out,_owner_school(c,school['id']),f"Sana belgilandi: {_fmt_day(day)}.");return
+    if state=='own_msg':
+        message=text.strip()
+        if len(message)>1000:
+            _say(out,chat,'Xabar 1000 belgidan oshmasin.',CANCEL_KB);return
+        _notify_school(c,out,school,message)
+        _touch(c,tg,'',{},row['user_id'])
+        _owner_card(c,chat,out,school,'Xabar yuborildi.');return
+    _touch(c,tg,'',{},row['user_id'])
 
 def _on_photo(c,row,chat,tg,photo,out):
     _save_receipt(c,chat,_profile(c,row),str((photo or {}).get('file_id') or ''),out)
@@ -406,6 +672,8 @@ def _on_text(c,row,chat,tg,text,out):
     if same(text,CANCEL) or cmd=='/cancel':
         _home(c,tg,chat,out,profile);return
     if _owner_command(c,tg,chat,text,out):return
+    if server.is_platform_admin(c,tg) and (row['state'] or '').startswith('own_'):
+        _owner_text(c,row,chat,tg,row['state'],_draft(row),text,out);return
     if profile and not server.school_access(c,profile['school_id'])['open']:
         _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
     if profile and profile['role']=='admin' and (cmd=='/kod' or same(text,CODE_BTN)):
@@ -1140,6 +1408,10 @@ def _send_span(c,out,profile,chat,scope,period,offer_previous=False):
 def _on_callback(c,row,chat,tg,data,out):
     if data.startswith(('payok:','payno:','paysee:')):
         _payment_callback(c,chat,tg,data,out);return
+    if data.startswith('ad:'):
+        if not server.is_platform_admin(c,tg):
+            out[0]['toast']='Ruxsat yo‘q';return
+        _owner_callback(c,row,chat,tg,data,out);return
     profile=_profile(c,row)
     if not profile:
         out[0]['toast']='Avval /start ni bosing';return
