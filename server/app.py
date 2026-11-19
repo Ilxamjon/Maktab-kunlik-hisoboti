@@ -71,13 +71,17 @@ def application(environ,start_response):
         elif method=='POST' and path=='/telegram/webhook':
             if not bot.accept_webhook(environ.get('HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN','')):raise server.ApiError('Ruxsat yo‘q',403)
             bot.process(data);result={'ok':True}
-        elif path=='/health':result={'status':'ok','version':'1.6','database':'postgres' if database.is_postgres() else 'sqlite'}
+        elif path=='/health':result={'status':'ok','version':'1.7','database':'postgres' if database.is_postgres() else 'sqlite'}
         elif path=='/cron/noon':
             expected=os.getenv('CRON_SECRET','');supplied=environ.get('HTTP_X_CRON_SECRET','')
-            if not expected or not secrets.compare_digest(supplied,expected):raise server.ApiError('Ruxsat yo‘q',403)
+            if not expected or not secrets.compare_digest(supplied.encode('utf-8'),expected.encode('utf-8')):raise server.ApiError('Ruxsat yo‘q',403)
             result=server.run_due_jobs();processed=0
-            while processed<100 and server.process_one():processed+=1
-            result['ok']=True;result['processed']=processed
+            try:
+                while processed<100 and server.process_one():processed+=1
+            except Exception as error:
+                LOG.exception('Outbox delivery failed')
+                result.setdefault('errors',{})['outbox']=type(error).__name__
+            result['ok']=not result.get('errors');result['processed']=processed
         else:result=server.dispatch(method,path+('?' +query if query else ''),data,token)
         if login_key:_clear_login_failures(login_key)
         if isinstance(result,server.HtmlPage):

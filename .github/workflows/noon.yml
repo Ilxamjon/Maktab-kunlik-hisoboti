@@ -17,6 +17,6 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           test -n "$API_URL" && test -n "$CRON_SECRET"
-          curl --fail --retry 3 --retry-all-errors --max-time 180 \
+          curl -sS --fail-with-body --retry 3 --retry-all-errors --max-time 180 \
             -H "X-Cron-Secret: $CRON_SECRET" \
             "$API_URL/cron/noon"

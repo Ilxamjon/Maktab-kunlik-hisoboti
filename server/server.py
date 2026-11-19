@@ -1074,8 +1074,16 @@ def maybe_subscription_warnings(now=None):
     return sent
 
 def run_due_jobs(now=None):
+    """Run every scheduled job; one failing job must not block the others."""
     now=now or now_uz()
-    return {'reminders':maybe_reminders(now),'queued':maybe_noon_digests(now),'chronic':maybe_chronic_digests(now),'warnings':maybe_subscription_warnings(now)}
+    result={};errors={}
+    for key,job in (('reminders',maybe_reminders),('queued',maybe_noon_digests),('chronic',maybe_chronic_digests),('warnings',maybe_subscription_warnings)):
+        try:result[key]=job(now)
+        except Exception as error:
+            LOG.exception('Scheduled job failed: %s',key)
+            result[key]=0;errors[key]=type(error).__name__
+    if errors:result['errors']=errors
+    return result
 
 def process_one():
     with connect() as c:
