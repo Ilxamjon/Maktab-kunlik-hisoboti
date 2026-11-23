@@ -307,7 +307,7 @@ class BotTests(unittest.TestCase):
             home=self.send(11,'/start')
             labels=[button['text'] for row in home[-1]['reply_markup']['keyboard'] for button in row]
             self.assertNotIn(bot.ADMIN_BTN,labels)
-            self.assertIn('Tel: 975627989',home[-1]['text'])
+            self.assertIn('Telegramm: @axiles717',home[-1]['text'])
             self.assertIn('Nukus şahri',home[-1]['text'])
             self.assertNotIn('Maktablar:',self.send(11,bot.ADMIN_BTN)[-1]['text'])
             panel=self.send(99,bot.ADMIN_BTN)
@@ -321,11 +321,13 @@ class BotTests(unittest.TestCase):
                 self.assertEqual(s.maybe_subscription_warnings(moment),1)
             text=send.call_args.args[1]
             self.assertIn('Oylik obuna tugashiga 3 kun qoldi',text)
-            self.assertIn('100 000 so‘m',text)
+            self.assertIn('30 000 so‘m',text)
             self.assertIn('Ilxam (admin)',text)
-            self.assertIn('Tel: 975627989',text)
+            self.assertIn('Telegramm: @axiles717',text)
             self.assertIn('Test Egası',text)
             self.assertIn('8600 0000 0000 0000',text)
+            self.assertLess(text.index('8600 0000 0000 0000'),text.index('Test Egası'))
+            self.assertIn('keyingi bir oyga yana ochiladi',text)
             self.assertEqual(send.call_args.args[0],'11')
             with s.connect() as c:
                 c.execute('UPDATE schools SET created_on=? WHERE id=?',((today-timedelta(days=10)).isoformat(),school))

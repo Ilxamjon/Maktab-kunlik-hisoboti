@@ -372,7 +372,7 @@ def deputy_chats(school):
         if env:found.append(env)
     return found
 
-FEE_SUM=100_000
+FEE_SUM=30_000
 TRIAL_DAYS=7
 
 def _add_month(day):
@@ -452,8 +452,11 @@ def delete_school(c,school_id):
     c.execute('DELETE FROM users WHERE school_id=?',(school_id,))
     c.execute('DELETE FROM schools WHERE id=?',(school_id,))
 
+def fee_text():
+    return f"{FEE_SUM:,}".replace(',',' ')+' so‘m'
+
 def contact_text():
-    return 'Qayta aloqa: Ilxam (admin)\nTel: 975627989\nManzil: Nukus shahri'
+    return 'Qayta aloqa: Ilxam (admin)\nTelegramm: @axiles717\nManzil: Nukus shahri'
 
 def payment_text(access):
     name,card=payment_details()
@@ -461,11 +464,11 @@ def payment_text(access):
         lines=['Obuna tugagan. Bot hozir ishlamaydi.']
     else:
         lines=[f"Oylik obuna tugashiga {access['days_left']} kun qoldi."]
-    lines.extend(['','Keyingi oy uchun 100 000 so‘m ni shu kartaga o‘tkazing:'])
-    if name:lines.append(name)
+    lines.extend(['',f"Keyingi oy uchun {fee_text()} ni shu kartaga o‘tkazing:"])
     if card:lines.append(card)
+    if name:lines.append(name)
     if not name or not card:lines.append('To‘lov rekvizitlari hali kiritilmagan.')
-    lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi oy ochiladi.','',contact_text()])
+    lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi bir oyga yana ochiladi.','',contact_text()])
     return '\n'.join(lines)
 
 def is_teaching_day(c,school_id,day):

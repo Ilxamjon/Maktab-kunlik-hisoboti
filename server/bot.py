@@ -622,7 +622,7 @@ def _save_receipt(c,chat,profile,file_id,out):
     _notify_receipt(c,out,payment_id)
 
 def _receipt_caption(row):
-    return f"Kvitansiya #{row['id']}\nMaktab: {row['school_name']}\nYubordi: {row['deputy_name']}\nSumma: 100 000 so‘m"
+    return f"Kvitansiya #{row['id']}\nMaktab: {row['school_name']}\nYubordi: {row['deputy_name']}\nSumma: {server.fee_text()}"
 
 def _receipt_buttons(payment_id):
     return {'inline_keyboard':[[{'text':'Tasdiqlash','callback_data':'payok:'+str(payment_id)},{'text':'Rad etish','callback_data':'payno:'+str(payment_id)}]]}
