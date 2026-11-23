@@ -456,7 +456,7 @@ def fee_text():
     return f"{FEE_SUM:,}".replace(',',' ')+' so‘m'
 
 def contact_text():
-    return 'Qayta aloqa: Ilxam (admin)\nTelegramm: @axiles717\nManzil: Nukus shahri'
+    return 'Qayta aloqa: Ilxam (admin)\nTelegramm: @axiless717\nManzil: Nukus shahri'
 
 def payment_text(access):
     name,card=payment_details()
