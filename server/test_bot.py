@@ -354,6 +354,38 @@ class BotTests(unittest.TestCase):
             self.assertTrue(any('Tasdiqlandi' in item.get('text','') for item in approved))
             self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
 
+    def test_deputy_gets_pupil_counts_text_and_xlsx(self):
+        code=self.deputy(11,'Ali','Valiyev','Birinchi maktab')
+        self.teacher(22,code,'Dilnoza','Karimova','7b')
+        self.teacher(44,code,'Sardor','Azimov','8a')
+        self.add_student(22,'Karimov Jasur')
+        self.send(22,bot.ADD);self.send(22,'Valiyeva Madina');self.tap(22,'g:F');self.send(22,bot.SKIP)
+        self.send(44,bot.ADD);self.send(44,'Nazarov Bek');self.tap(44,'g:M');self.send(44,bot.SKIP)
+        from alphabet import to_new
+        labels=[button['text'] for row in self.send(11,'/start')[-1]['reply_markup']['keyboard'] for button in row]
+        self.assertIn(to_new(bot.COUNTS_BTN),labels)
+        sent=self.send(11,bot.COUNTS_BTN)
+        text=next(item['text'] for item in sent if 'jami' in item.get('text','').lower())
+        self.assertIn('7B',text)
+        self.assertIn('8A',text)
+        self.assertIn(to_new('7B — jami: 2, o‘g‘il: 1, qiz: 1'),text)
+        self.assertIn(to_new('8A — jami: 1, o‘g‘il: 1, qiz: 0'),text)
+        self.assertIn(to_new('Maktab bo‘yicha jami o‘quvchilar: 3'),text)
+        self.assertIn(to_new('O‘g‘il bolalar: 2'),text)
+        self.assertIn('Qiz bolalar: 1',text)
+        blob=next(item['pdf'] for item in sent if item.get('pdf') is not None)
+        self.assertTrue(any(item.get('filename','').startswith('Oquvchilar-soni-') for item in sent))
+        book=load_workbook(io.BytesIO(blob))
+        sheet=book.active
+        self.assertEqual(sheet['B5'].value,'7-B')
+        self.assertEqual(sheet['C5'].value,2)
+        self.assertEqual(sheet['D5'].value,1)
+        self.assertEqual(sheet['E5'].value,1)
+        self.assertEqual(sheet['B6'].value,'8-A')
+        self.assertEqual(sheet['C7'].value,3)
+        self.assertEqual(sheet['D7'].value,2)
+        self.assertEqual(sheet['E7'].value,1)
+
     def test_deputy_marks_several_holidays_on_the_month_calendar(self):
         from datetime import date
         self.deputy(11,'Ali','Valiyev','Birinchi maktab')

@@ -19,6 +19,7 @@ PDF_BTN='Bugungi jadval'
 MONTH_BTN='Oylik hisobot'
 YEAR_BTN='Yillik hisobot'
 STATUS='Sinflar holati'
+COUNTS_BTN='O‘quvchilar soni'
 STAFF='Sinf rahbarlari'
 DAYS='Dam olish'
 DEPUTY2='Ikkinchi o‘rinbosar'
@@ -30,7 +31,7 @@ DONE='Tayyor'
 SKIP='O‘tkazib yuborish'
 BOY='O‘g‘il'
 GIRL='Qiz'
-LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,STAFF,DAYS,CODE_BTN,DIRECTOR_BTN,ADMIN_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
+LABELS=(DEPUTY,TEACHER,DEPUTY2,ADD,LIST,ROSTER_BTN,ATT,PDF_BTN,MONTH_BTN,YEAR_BTN,STATUS,COUNTS_BTN,STAFF,DAYS,CODE_BTN,DIRECTOR_BTN,ADMIN_BTN,CANCEL,DONE,SKIP,BOY,GIRL)
 
 def norm(value):
     return fold(value)
@@ -47,12 +48,12 @@ def keyboard(*rows):
 
 ROLE_KB=keyboard([DEPUTY],[TEACHER],[DEPUTY2])
 TEACHER_KB=keyboard([ADD],[LIST,ATT],[ROSTER_BTN])
-DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN,DIRECTOR_BTN])
+DEPUTY_KB=keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[COUNTS_BTN,DAYS],[DEPUTY2],[CODE_BTN,DIRECTOR_BTN])
 CANCEL_KB=keyboard([CANCEL])
 
 def _deputy_kb(c,chat):
     if not server.is_platform_admin(c,chat):return DEPUTY_KB
-    return keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[DAYS,DEPUTY2],[CODE_BTN,DIRECTOR_BTN],[ADMIN_BTN])
+    return keyboard([PDF_BTN],[MONTH_BTN,YEAR_BTN],[STAFF,STATUS],[COUNTS_BTN,DAYS],[DEPUTY2],[CODE_BTN,DIRECTOR_BTN],[ADMIN_BTN])
 WIZARD_KB=keyboard([DONE],[CANCEL])
 ADDRESS_KB=keyboard([SKIP],[CANCEL])
 
@@ -683,6 +684,8 @@ def _on_text(c,row,chat,tg,text,out):
         _say(out,chat,'Maktab direktorining ismini yozing.',CANCEL_KB);return
     if profile and profile['role']=='admin' and (cmd=='/holat' or same(text,STATUS)):
         _say(out,chat,_status_text(c,profile),_deputy_kb(c,chat));return
+    if profile and profile['role']=='admin' and (cmd=='/son' or same(text,COUNTS_BTN)):
+        _send_pupil_counts(c,out,chat,profile);return
     if profile and profile['role']=='admin' and (cmd=='/pdf' or same(text,PDF_BTN)):
         _send_compiled(c,out,profile,chat,f"{profile['school_name']} | bugungi jamlanma");return
     if profile and profile['role']=='admin' and (cmd=='/oy' or same(text,MONTH_BTN)):
@@ -1517,6 +1520,41 @@ def _status_text(c,profile):
         else:
             lines.append(f"{row['class']} — {row['teacher_name'] or '—'} — jo‘natmadi")
     return '\n'.join(lines)
+
+def _pupil_count_rows(c,school_id):
+    rows=[]
+    for row in c.execute('''SELECT cl.name AS class_name,
+        COUNT(s.id) AS total,
+        SUM(CASE WHEN s.gender='M' THEN 1 ELSE 0 END) AS boys,
+        SUM(CASE WHEN s.gender='F' THEN 1 ELSE 0 END) AS girls
+        FROM classes cl
+        LEFT JOIN students s ON s.class_id=cl.id AND s.active=1
+        WHERE cl.school_id=?
+        GROUP BY cl.id,cl.name
+        ORDER BY cl.name''',(school_id,)):
+        rows.append({'class':row['class_name'],'total':int(row['total'] or 0),'boys':int(row['boys'] or 0),'girls':int(row['girls'] or 0)})
+    return rows
+
+def _pupil_counts_text(school_name,rows):
+    if not rows:return 'Hali sinf yo‘q. Sinf rahbarlari kirgach sonlar chiqadi.'
+    lines=[school_name,'','Har bir sinf:']
+    total=boys=girls=0
+    for row in rows:
+        lines.append(f"{row['class']} — jami: {row['total']}, o‘g‘il: {row['boys']}, qiz: {row['girls']}")
+        total+=row['total'];boys+=row['boys'];girls+=row['girls']
+    lines.extend(['',f"Maktab bo‘yicha jami o‘quvchilar: {total}",f"O‘g‘il bolalar: {boys}",f"Qiz bolalar: {girls}"])
+    return '\n'.join(lines)
+
+def _send_pupil_counts(c,out,chat,profile):
+    rows=_pupil_count_rows(c,profile['school_id'])
+    text=_pupil_counts_text(profile['school_name'],rows)
+    _say(out,chat,text,_deputy_kb(c,chat))
+    if not rows:return
+    school=c.execute('SELECT code FROM schools WHERE id=?',(profile['school_id'],)).fetchone()
+    code=(school['code'] if school else 'maktab')
+    day=server.today().isoformat()
+    blob=roster.make_counts_xlsx(profile['school_name'],rows)
+    out.append({'pdf':blob,'content_type':XLSX,'chat_id':chat,'text':'O‘quvchilar soni jadvali','day':day,'filename':'Oquvchilar-soni-'+code+'-'+day+'.xlsx'})
 
 def _send_compiled(c,out,profile,notify_chat,caption):
     school=c.execute('SELECT * FROM schools WHERE id=?',(profile['school_id'],)).fetchone()

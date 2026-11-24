@@ -92,3 +92,24 @@ def make_roster_xlsx(class_name,students):
         sheet.cell(4+index,4,to_new(student.get('address') or ''))
     for letter,width in zip('ABCD',(8,32,14,36)):sheet.column_dimensions[letter].width=width
     stream=io.BytesIO();book.save(stream);return stream.getvalue()
+
+def make_counts_xlsx(school_name,rows):
+    """School-wide active pupil counts by class: total, boys, girls."""
+    book=Workbook();sheet=book.active;sheet.title='Sonlar'
+    sheet['A1']=to_new(school_name or 'Maktab')
+    sheet['A2']=to_new("O'quvchilar soni")
+    headers=('№','Sinf','Jami o‘quvchilar','O‘g‘il bolalar','Qiz bolalar')
+    for column,text in enumerate(headers,1):sheet.cell(4,column,to_new(text))
+    total=boys=girls=0
+    for index,row in enumerate(rows,1):
+        sheet.cell(4+index,1,index)
+        sheet.cell(4+index,2,display_class(row.get('class') or ''))
+        sheet.cell(4+index,3,int(row.get('total') or 0))
+        sheet.cell(4+index,4,int(row.get('boys') or 0))
+        sheet.cell(4+index,5,int(row.get('girls') or 0))
+        total+=int(row.get('total') or 0);boys+=int(row.get('boys') or 0);girls+=int(row.get('girls') or 0)
+    foot=5+len(rows)
+    sheet.cell(foot,2,to_new('Maktab bo‘yicha jami'))
+    sheet.cell(foot,3,total);sheet.cell(foot,4,boys);sheet.cell(foot,5,girls)
+    for letter,width in zip('ABCDE',(6,14,18,16,16)):sheet.column_dimensions[letter].width=width
+    stream=io.BytesIO();book.save(stream);return stream.getvalue()
