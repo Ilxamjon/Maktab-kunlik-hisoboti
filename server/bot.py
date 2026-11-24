@@ -216,7 +216,7 @@ def _on_document(c,row,chat,tg,document,out):
     if name.endswith(('.jpg','.jpeg','.png','.webp')) or mime.startswith('image/'):
         _save_receipt(c,chat,profile,document.get('file_id') or '',out);return
     if profile and not server.school_access(c,profile['school_id'])['open']:
-        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
+        _say(out,chat,server.access_blocked_text(server.school_access(c,profile['school_id']),profile['role']));return
     if not name.endswith('.xlsx'):
         _say(out,chat,'Faqat .xlsx fayl yuboring. Ustunlar: F.I.SH, Jinsi, Yashash manzili.');return
     if not profile or profile['role']!='teacher' or not profile.get('class_id'):
@@ -299,7 +299,7 @@ def _home(c,tg,chat,out,profile):
     access=server.school_access(c,profile['school_id'])
     if not access['open']:
         markup=keyboard([ADMIN_BTN]) if server.is_platform_admin(c,tg) else None
-        _say(out,chat,server.payment_text(access),markup)
+        _say(out,chat,server.access_blocked_text(access,profile['role']),markup)
         return
     if profile['role']=='admin':
         _say(out,chat,_deputy_text(profile),_deputy_kb(c,chat))
@@ -675,7 +675,7 @@ def _on_text(c,row,chat,tg,text,out):
     if server.is_platform_admin(c,tg) and (row['state'] or '').startswith('own_'):
         _owner_text(c,row,chat,tg,row['state'],_draft(row),text,out);return
     if profile and not server.school_access(c,profile['school_id'])['open']:
-        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
+        _say(out,chat,server.access_blocked_text(server.school_access(c,profile['school_id']),profile['role']));return
     if profile and profile['role']=='admin' and (cmd=='/kod' or same(text,CODE_BTN)):
         _say(out,chat,f"O‘qituvchilar kodi: {profile['join_code']}",_deputy_kb(c,chat));return
     if profile and profile['role']=='admin' and same(text,DIRECTOR_BTN):
@@ -809,7 +809,7 @@ def _register(c,tg,chat,state,draft,text,out):
         if not school:
             _say(out,chat,'Kod topilmadi. Direktor o‘rinbosaridan 6 xonali kodni so‘rang.',CANCEL_KB);return
         if not server.school_access(c,school['id'])['open']:
-            _say(out,chat,'Bu maktabning obunasi tugagan. Direktor o‘rinbosari to‘lov qilishi kerak.',ROLE_KB);return
+            _say(out,chat,server.TEACHER_CLOSED,ROLE_KB);return
         draft={'school_id':school['id'],'school_name':school['name']}
         _touch(c,tg,'tch_first',draft,None)
         _say(out,chat,school['name']+'\nIsmingizni yozing.',CANCEL_KB);return
@@ -1417,7 +1417,7 @@ def _on_callback(c,row,chat,tg,data,out):
         out[0]['toast']='Avval /start ni bosing';return
     if not server.school_access(c,profile['school_id'])['open']:
         out[0]['toast']='Obuna tugagan'
-        _say(out,chat,server.payment_text(server.school_access(c,profile['school_id'])));return
+        _say(out,chat,server.access_blocked_text(server.school_access(c,profile['school_id']),profile['role']));return
     if profile['role']=='admin' and data.startswith('mo:'):
         month=data.split(':',1)[1]
         try:server.month_value(month)

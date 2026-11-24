@@ -458,6 +458,8 @@ def fee_text():
 def contact_text():
     return 'Qayta aloqa: Ilxam (admin)\nTelegramm: @axiless717\nManzil: Nukus shahri'
 
+TEACHER_CLOSED='Bu oy obunasi uchun Maktab Ma‘naviy-ma‘rifiy ishlari bo‘yicha direktor o‘rinbosari tomonidan to‘lov qilinmadi'
+
 def payment_text(access):
     name,card=payment_details()
     if access['days_left']<0:
@@ -470,6 +472,11 @@ def payment_text(access):
     if not name or not card:lines.append('To‘lov rekvizitlari hali kiritilmagan.')
     lines.extend(['','Kvitansiya rasmini shu botga yuboring. Tasdiqlangach keyingi bir oyga yana ochiladi.','',contact_text()])
     return '\n'.join(lines)
+
+def access_blocked_text(access,role='admin'):
+    """Only the school deputy pays; teachers see a short notice without card details."""
+    if role=='teacher':return TEACHER_CLOSED
+    return payment_text(access)
 
 def is_teaching_day(c,school_id,day):
     row=c.execute('SELECT teaching FROM calendar WHERE school_id=? AND day=?',(school_id,day)).fetchone()

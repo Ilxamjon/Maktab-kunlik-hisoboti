@@ -331,8 +331,14 @@ class BotTests(unittest.TestCase):
             self.assertEqual(send.call_args.args[0],'11')
             with s.connect() as c:
                 c.execute('UPDATE schools SET created_on=? WHERE id=?',((today-timedelta(days=10)).isoformat(),school))
-            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
-            self.assertIn('işlamaydi',self.send(11,bot.PDF_BTN)[-1]['text'])
+            teacher_closed=self.send(22,bot.ATT)[-1]['text']
+            self.assertIn('direktor örinbosari tomonidan tölov qilinmadi',teacher_closed)
+            self.assertNotIn('30 000',teacher_closed)
+            self.assertNotIn('8600',teacher_closed)
+            deputy_closed=self.send(11,bot.PDF_BTN)[-1]['text']
+            self.assertIn('işlamaydi',deputy_closed)
+            self.assertIn('30 000 söm',deputy_closed)
+            self.assertIn('8600 0000 0000 0000',deputy_closed)
             shot=self.photo(11)
             self.assertTrue(any('qabul qilindi' in item.get('text','') for item in shot))
             notice=next(item for item in shot if item.get('photo'))
@@ -341,7 +347,9 @@ class BotTests(unittest.TestCase):
             self.assertIn('Valiyev Ali',notice['text'])
             payment=notice['reply_markup']['inline_keyboard'][0][0]['callback_data']
             self.assertEqual(self.tap(33,payment)[0].get('toast'),'Ruxsat yöq')
-            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('tölov qilinmadi',self.send(22,bot.ATT)[-1]['text'])
+            teacher_photo=self.photo(22)
+            self.assertTrue(any('direktor örinbosari' in item.get('text','') for item in teacher_photo))
             approved=self.tap(99,payment)
             self.assertTrue(any('Tasdiqlandi' in item.get('text','') for item in approved))
             self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
@@ -479,7 +487,7 @@ class BotTests(unittest.TestCase):
             self.assertIn('ad:cy:'+str(one),self.callbacks(self.tap(99,'ad:c:'+str(one))[-1]))
             closed=self.tap(99,'ad:cy:'+str(one))
             self.assertTrue(any(str(item.get('chat_id'))=='11' and 'Obuna' in item.get('text','') for item in closed))
-            self.assertIn('işlamaydi',self.send(22,bot.ATT)[-1]['text'])
+            self.assertIn('tölov qilinmadi',self.send(22,bot.ATT)[-1]['text'])
             self.assertIn('Maktablar: 1 ta',self.tap(99,'ad:l:c:0')[-1]['text'])
             self.tap(99,'ad:x:'+str(one))
             self.assertIn('Karimov Jasur',self.send(22,bot.ATT)[-1]['text'])
